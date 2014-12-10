@@ -152,6 +152,8 @@ static void document_foot(StringBuffer_T B) {
  * @param V Format version
  */
 static void status_service(Service_T S, StringBuffer_T B, short L, int V) {
+        Event_T E = S->eventlist;
+        
         if (V == 2)
                 StringBuffer_append(B, "<service name=\"%s\"><type>%d</type>", S->name ? S->name : "", S->type);
         else
