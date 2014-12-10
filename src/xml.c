@@ -180,6 +180,14 @@ static void status_service(Service_T S, StringBuffer_T B, short L, int V) {
                 StringBuffer_append(B, "</every>");
         }
 
+        /* if the service is in error state, display first active error message to provide more details */
+        while (E) {
+                if ((E->state == STATE_FAILED || E->state == STATE_CHANGED) && (S->error & E->id) && E->message) {
+                        StringBuffer_append(B, "<status_message><![CDATA[%s]]></status_message>", E->message);
+                        break;
+                }
+                E = E->next;
+        }
         if (L == LEVEL_FULL) {
                 if (Util_hasServiceStatus(S)) {
                         if (S->type == TYPE_FILE || S->type == TYPE_DIRECTORY || S->type == TYPE_FIFO || S->type == TYPE_FILESYSTEM)
@@ -426,4 +434,3 @@ void status_xml(StringBuffer_T B, Event_T E, short L, int V, const char *myip) {
                 status_event(E, B);
         document_foot(B);
 }
-
