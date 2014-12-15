@@ -133,7 +133,7 @@ cleanall: clean distclean
 	-rm -rf m4 config
 		
 monit.1: doc/monit.pod
-	$(POD2MAN) $(POD2MANFLAGS) $< > $@
+	$(POD2MAN) $(POD2MANFLAGS) doc/monit.pod > $@
 	-rm -f pod2*
 
 
@@ -142,13 +142,13 @@ monit.1: doc/monit.pod
 # -------------
 
 src/y.tab.c src/tokens.h: src/p.y
-	$(YACC) $(YACCFLAGS) -o src/y.tab.c $<
+	$(YACC) $(YACCFLAGS) -o src/y.tab.c src/p.y
 	-echo "#include <config.h>" > src/.y.tab.c
 	-cat src/y.tab.c >> src/.y.tab.c
 	-mv src/.y.tab.c src/y.tab.c
 	-mv src/y.tab.h src/tokens.h
 	
 src/lex.yy.c: src/l.l
-	$(FLEX) $(FLEXFLAGS) -o$@ $< 
+	$(FLEX) $(FLEXFLAGS) -o$@ src/l.l 
 
 
