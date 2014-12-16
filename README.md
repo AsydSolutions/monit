@@ -1,3 +1,14 @@
+AsydSolutions/monit
+===================
+
+This is a fork from the official [Monit repository](https://bitbucket.org/tildeslash/monit) including some small changes for getting more detailed output from the XML web API to use on ASYD (i.e. host failure notifications).
+
+The ASYD builds are based on the latest stable Monit version (currently 5.10) with the mentioned patch. You can see all the [differences](https://github.com/AsydSolutions/monit/compare/release-5-10-0...asyd) between the official 5.10 and ASYD's version.
+
+<br><br>
+---
+
+
 [![Monit](http://mmonit.com/monit/img/logo@2x.png)](http://mmonit.com/monit) 
  
 
