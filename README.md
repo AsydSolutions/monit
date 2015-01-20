@@ -5,6 +5,8 @@ This is a fork from the official [Monit repository](https://bitbucket.org/tildes
 
 The ASYD builds are based on the latest stable Monit version (currently 5.11) with the mentioned patch. You can check out the [differences](https://github.com/AsydSolutions/monit/compare/426bcbf84b5013e80cb564fa5c46f476c014a1c4...9ebb8004c30824113554b4ddd21b3c58a477683c) between the official Monit version and ASYD's version.
 
+You can find the pre-compiled binaries for release 5.11-ASYD [here](https://github.com/AsydSolutions/monit/releases/tag/release-5-11-asyd).
+
 <br><br>
 ---
 
