@@ -162,10 +162,16 @@
   static Service_T depend_list = NULL;
   static struct myuid uidset;
   static struct mygid gidset;
+  static struct mypid pidset;
+  static struct mypid ppidset;
   static struct mystatus statusset;
   static struct myperm permset;
   static struct mysize sizeset;
   static struct myuptime uptimeset;
+  static struct mynetlinkstatus netlinkstatusset;
+  static struct mynetlinkspeed netlinkspeedset;
+  static struct mynetlinksaturation netlinksaturationset;
+  static struct mybandwidth bandwidthset;
   static struct mymatch matchset;
   static struct myicmp icmpset;
   static struct mymail mailset;
@@ -200,6 +206,12 @@
   static void  addactionrate(ActionRate_T);
   static void  addsize(Size_T);
   static void  adduptime(Uptime_T);
+  static void  addpid(Pid_T);
+  static void  addppid(Pid_T);
+  static void  addnetlinkstatus(Service_T, NetLinkStatus_T);
+  static void  addnetlinkspeed(Service_T, NetLinkSpeed_T);
+  static void  addnetlinksaturation(Service_T, NetLinkSaturation_T);
+  static void  addbandwidth(Bandwidth_T *, Bandwidth_T);
   static void  addfilesystem(Filesystem_T);
   static void  addicmp(Icmp_T);
   static void  addgeneric(Port_T, char*, char*);
@@ -237,6 +249,12 @@
   static void  reset_actionrateset();
   static void  reset_sizeset();
   static void  reset_uptimeset();
+  static void  reset_pidset();
+  static void  reset_ppidset();
+  static void  reset_netlinkstatusset();
+  static void  reset_netlinkspeedset();
+  static void  reset_netlinksaturationset();
+  static void  reset_bandwidthset();
   static void  reset_checksumset();
   static void  reset_permset();
   static void  reset_uidset();
@@ -268,26 +286,27 @@
 %token SET LOGFILE FACILITY DAEMON SYSLOG MAILSERVER HTTPD ALLOW ADDRESS INIT
 %token READONLY CLEARTEXT MD5HASH SHA1HASH CRYPT DELAY
 %token PEMFILE ENABLE DISABLE HTTPDSSL CLIENTPEMFILE ALLOWSELFCERTIFICATION
+%token INTERFACE LINK PACKET ERROR BYTEIN BYTEOUT PACKETIN PACKETOUT SPEED SATURATION UPLOAD DOWNLOAD TOTAL
 %token IDFILE STATEFILE SEND EXPECT EXPECTBUFFER CYCLE COUNT REMINDER
 %token PIDFILE START STOP PATHTOK
 %token HOST HOSTNAME PORT TYPE UDP TCP TCPSSL PROTOCOL CONNECTION
 %token ALERT NOALERT MAILFORMAT UNIXSOCKET SIGNATURE
 %token TIMEOUT RETRY RESTART CHECKSUM EVERY NOTEVERY
 %token DEFAULT HTTP HTTPS APACHESTATUS FTP SMTP SMTPS POP IMAP IMAPS CLAMAV NNTP NTP3 MYSQL DNS WEBSOCKET
-%token SSH DWP LDAP2 LDAP3 RDATE RSYNC TNS PGSQL POSTFIXPOLICY SIP LMTP GPS RADIUS MEMCACHE REDIS MONGODB
+%token SSH DWP LDAP2 LDAP3 RDATE RSYNC TNS PGSQL POSTFIXPOLICY SIP LMTP GPS RADIUS MEMCACHE REDIS MONGODB SIEVE
 %token <string> STRING PATH MAILADDR MAILFROM MAILREPLYTO MAILSUBJECT
 %token <string> MAILBODY SERVICENAME STRINGNAME
 %token <number> NUMBER PERCENT LOGLIMIT CLOSELIMIT DNSLIMIT KEEPALIVELIMIT
 %token <number> REPLYLIMIT REQUESTLIMIT STARTLIMIT WAITLIMIT GRACEFULLIMIT
 %token <number> CLEANUPLIMIT
 %token <real> REAL
-%token CHECKPROC CHECKFILESYS CHECKFILE CHECKDIR CHECKHOST CHECKSYSTEM CHECKFIFO CHECKPROGRAM
+%token CHECKPROC CHECKFILESYS CHECKFILE CHECKDIR CHECKHOST CHECKSYSTEM CHECKFIFO CHECKPROGRAM CHECKNET
 %token CHILDREN SYSTEM STATUS ORIGIN VERSIONOPT
 %token RESOURCE MEMORY TOTALMEMORY LOADAVG1 LOADAVG5 LOADAVG15 SWAP
 %token MODE ACTIVE PASSIVE MANUAL CPU TOTALCPU CPUUSER CPUSYSTEM CPUWAIT
 %token GROUP REQUEST DEPENDS BASEDIR SLOT EVENTQUEUE SECRET HOSTHEADER
 %token UID EUID GID MMONIT INSTANCE USERNAME PASSWORD
-%token TIMESTAMP CHANGED SECOND MINUTE HOUR DAY
+%token TIMESTAMP CHANGED SECOND MINUTE HOUR DAY MONTH
 %token SSLAUTO SSLV2 SSLV3 TLSV1 TLSV11 TLSV12 CERTMD5
 %token BYTE KILOBYTE MEGABYTE GIGABYTE
 %token INODE SPACE PERMISSION SIZE MATCH NOT IGNORE ACTION UPTIME
@@ -333,6 +352,7 @@ statement       : setalert
                 | checksystem optsystemlist
                 | checkfifo optfifolist
                 | checkprogram optstatuslist
+                | checknet optnetlist
                 ;
 
 optproclist     : /* EMPTY */
@@ -439,6 +459,25 @@ opthost         : start
                 | alert
                 | every
                 | mode
+                | group
+                | depend
+                ;
+
+optnetlist      : /* EMPTY */
+                | optnetlist optnet
+                ;
+
+optnet          : start
+                | stop
+                | restart
+                | netlinkstatus
+                | netlinkspeed
+                | netlinksaturation
+                | upload
+                | download
+                | actionrate
+                | every
+                | alert
                 | group
                 | depend
                 ;
@@ -864,6 +903,20 @@ checkhost       : CHECKHOST SERVICENAME ADDRESS STRING {
                   }
                 ;
 
+checknet        : CHECKNET SERVICENAME ADDRESS STRING {
+                    if (NetStatistics_isGetByAddressSupported()) {
+                        createservice(TYPE_NET, $<string>2, $4, check_net);
+                        current->inf->priv.net.stats = NetStatistics_createForAddress($4);
+                    } else {
+                        yyerror("Network monitoring by IP address is not supported on this platform, please use 'check network <foo> with interface <bar>' instead");
+                    }
+                  }
+                | CHECKNET SERVICENAME INTERFACE STRING {
+                    createservice(TYPE_NET, $<string>2, $4, check_net);
+                    current->inf->priv.net.stats = NetStatistics_createForInterface($4);
+                  }
+                ;
+
 checksystem     : CHECKSYSTEM SERVICENAME {
                     char hostname[STRLEN];
                     if (Util_getfqdnhostname(hostname, sizeof(hostname))) {
@@ -1128,6 +1181,9 @@ protocol        : /* EMPTY */  {
                 | PROTOCOL POP {
                     portset.protocol = Protocol_get(Protocol_POP);
                   }
+                | PROTOCOL SIEVE {
+                    portset.protocol = Protocol_get(Protocol_SIEVE);
+                  }
                 | PROTOCOL SMTP {
                     portset.protocol = Protocol_get(Protocol_SMTP);
                   }
@@ -1320,12 +1376,14 @@ exist           : IF NOT EXIST rate1 THEN action1 recovery {
 
 
 pid             : IF CHANGED PID rate1 THEN action1 {
-                    seteventaction(&(current)->action_PID, $<number>6, ACTION_IGNORE);
+                    addeventaction(&(pidset).action, $<number>6, ACTION_IGNORE);
+                    addpid(&pidset);
                   }
                 ;
 
 ppid            : IF CHANGED PPID rate1 THEN action1 {
-                    seteventaction(&(current)->action_PPID, $<number>6, ACTION_IGNORE);
+                    addeventaction(&(ppidset).action, $<number>6, ACTION_IGNORE);
+                    addppid(&ppidset);
                   }
                 ;
 
@@ -1428,6 +1486,8 @@ eventoptionlist : eventoption
                 ;
 
 eventoption     : ACTION          { mailset.events |= Event_Action; }
+                | BYTEIN          { mailset.events |= Event_ByteIn; }
+                | BYTEOUT         { mailset.events |= Event_ByteOut; }
                 | CHECKSUM        { mailset.events |= Event_Checksum; }
                 | CONNECTION      { mailset.events |= Event_Connection; }
                 | CONTENT         { mailset.events |= Event_Content; }
@@ -1438,12 +1498,17 @@ eventoption     : ACTION          { mailset.events |= Event_Action; }
                 | ICMP            { mailset.events |= Event_Icmp; }
                 | INSTANCE        { mailset.events |= Event_Instance; }
                 | INVALID         { mailset.events |= Event_Invalid; }
+                | LINK            { mailset.events |= Event_Link; }
                 | NONEXIST        { mailset.events |= Event_Nonexist; }
+                | PACKETIN        { mailset.events |= Event_PacketIn; }
+                | PACKETOUT       { mailset.events |= Event_PacketOut; }
                 | PERMISSION      { mailset.events |= Event_Permission; }
                 | PID             { mailset.events |= Event_Pid; }
                 | PPID            { mailset.events |= Event_PPid; }
                 | RESOURCE        { mailset.events |= Event_Resource; }
+                | SATURATION      { mailset.events |= Event_Saturation; }
                 | SIZE            { mailset.events |= Event_Size; }
+                | SPEED           { mailset.events |= Event_Speed; }
                 | STATUS          { mailset.events |= Event_Status; }
                 | TIMEOUT         { mailset.events |= Event_Timeout; }
                 | TIMESTAMP       { mailset.events |= Event_Timestamp; }
@@ -1660,7 +1725,15 @@ time            : /* EMPTY */ { $<number>$ = TIME_SECOND; }
                 | MINUTE      { $<number>$ = TIME_MINUTE; }
                 | HOUR        { $<number>$ = TIME_HOUR; }
                 | DAY         { $<number>$ = TIME_DAY; }
+                | MONTH       { $<number>$ = TIME_MONTH; }
                 ;
+
+totaltime       : MINUTE      { $<number>$ = TIME_MINUTE; }
+                | HOUR        { $<number>$ = TIME_HOUR; }
+                | DAY         { $<number>$ = TIME_DAY; }
+
+currenttime     : /* EMPTY */ { $<number>$ = TIME_SECOND; }
+                | SECOND      { $<number>$ = TIME_SECOND; }
 
 action          : ALERT                            { $<number>$ = ACTION_ALERT; }
                 | EXEC argumentlist                { $<number>$ = ACTION_EXEC; }
@@ -1901,6 +1974,125 @@ gid             : IF FAILED GID STRING rate1 THEN action1 recovery {
                   }
                 ;
 
+netlinkstatus   : IF FAILED LINK rate1 THEN action1 recovery {
+                    addeventaction(&(netlinkstatusset).action, $<number>6, $<number>7);
+                    addnetlinkstatus(current, &netlinkstatusset);
+                  }
+                ;
+
+netlinkspeed    : IF CHANGED LINK rate1 THEN action1 recovery {
+                    addeventaction(&(netlinkspeedset).action, $<number>6, $<number>7);
+                    addnetlinkspeed(current, &netlinkspeedset);
+                  }
+
+netlinksaturation : IF SATURATION operator NUMBER PERCENT rate1 THEN action1 recovery {
+                    netlinksaturationset.operator = $<number>3;
+                    netlinksaturationset.limit = (unsigned long long)$4;
+                    addeventaction(&(netlinksaturationset).action, $<number>8, $<number>9);
+                    addnetlinksaturation(current, &netlinksaturationset);
+                  }
+                ;
+
+upload          : IF UPLOAD operator NUMBER unit currenttime rate1 THEN action1 recovery {
+                    bandwidthset.operator = $<number>3;
+                    bandwidthset.limit = ((unsigned long long)$4 * $<number>5);
+                    bandwidthset.rangecount = 1;
+                    bandwidthset.range = $<number>6;
+                    addeventaction(&(bandwidthset).action, $<number>9, $<number>10);
+                    addbandwidth(&(current->uploadbyteslist), &bandwidthset);
+                  }
+                | IF TOTAL UPLOAD operator NUMBER unit totaltime rate1 THEN action1 recovery {
+                    bandwidthset.operator = $<number>4;
+                    bandwidthset.limit = ((unsigned long long)$5 * $<number>6);
+                    bandwidthset.rangecount = 1;
+                    bandwidthset.range = $<number>7;
+                    addeventaction(&(bandwidthset).action, $<number>10, $<number>11);
+                    addbandwidth(&(current->uploadbyteslist), &bandwidthset);
+                  }
+                | IF TOTAL UPLOAD operator NUMBER unit NUMBER totaltime rate1 THEN action1 recovery {
+                    bandwidthset.operator = $<number>4;
+                    bandwidthset.limit = ((unsigned long long)$5 * $<number>6);
+                    bandwidthset.rangecount = $7;
+                    bandwidthset.range = $<number>8;
+                    addeventaction(&(bandwidthset).action, $<number>11, $<number>12);
+                    addbandwidth(&(current->uploadbyteslist), &bandwidthset);
+                  }
+                | IF UPLOAD operator NUMBER PACKET currenttime rate1 THEN action1 recovery {
+                    bandwidthset.operator = $<number>3;
+                    bandwidthset.limit = (unsigned long long)$4;
+                    bandwidthset.rangecount = 1;
+                    bandwidthset.range = $<number>6;
+                    addeventaction(&(bandwidthset).action, $<number>9, $<number>10);
+                    addbandwidth(&(current->uploadpacketslist), &bandwidthset);
+                  }
+                | IF TOTAL UPLOAD operator NUMBER PACKET totaltime rate1 THEN action1 recovery {
+                    bandwidthset.operator = $<number>4;
+                    bandwidthset.limit = (unsigned long long)$5;
+                    bandwidthset.rangecount = 1;
+                    bandwidthset.range = $<number>7;
+                    addeventaction(&(bandwidthset).action, $<number>10, $<number>11);
+                    addbandwidth(&(current->uploadpacketslist), &bandwidthset);
+                  }
+                | IF TOTAL UPLOAD operator NUMBER PACKET NUMBER totaltime rate1 THEN action1 recovery {
+                    bandwidthset.operator = $<number>4;
+                    bandwidthset.limit = (unsigned long long)$5;
+                    bandwidthset.rangecount = $7;
+                    bandwidthset.range = $<number>8;
+                    addeventaction(&(bandwidthset).action, $<number>11, $<number>12);
+                    addbandwidth(&(current->uploadpacketslist), &bandwidthset);
+                  }
+                ;
+
+download        : IF DOWNLOAD operator NUMBER unit currenttime rate1 THEN action1 recovery {
+                    bandwidthset.operator = $<number>3;
+                    bandwidthset.limit = ((unsigned long long)$4 * $<number>5);
+                    bandwidthset.rangecount = 1;
+                    bandwidthset.range = $<number>6;
+                    addeventaction(&(bandwidthset).action, $<number>9, $<number>10);
+                    addbandwidth(&(current->downloadbyteslist), &bandwidthset);
+                  }
+                | IF TOTAL DOWNLOAD operator NUMBER unit totaltime rate1 THEN action1 recovery {
+                    bandwidthset.operator = $<number>4;
+                    bandwidthset.limit = ((unsigned long long)$5 * $<number>6);
+                    bandwidthset.rangecount = 1;
+                    bandwidthset.range = $<number>7;
+                    addeventaction(&(bandwidthset).action, $<number>10, $<number>11);
+                    addbandwidth(&(current->downloadbyteslist), &bandwidthset);
+                  }
+                | IF TOTAL DOWNLOAD operator NUMBER unit NUMBER totaltime rate1 THEN action1 recovery {
+                    bandwidthset.operator = $<number>4;
+                    bandwidthset.limit = ((unsigned long long)$5 * $<number>6);
+                    bandwidthset.rangecount = $7;
+                    bandwidthset.range = $<number>8;
+                    addeventaction(&(bandwidthset).action, $<number>11, $<number>12);
+                    addbandwidth(&(current->downloadbyteslist), &bandwidthset);
+                  }
+                | IF DOWNLOAD operator NUMBER PACKET currenttime rate1 THEN action1 recovery {
+                    bandwidthset.operator = $<number>3;
+                    bandwidthset.limit = (unsigned long long)$4;
+                    bandwidthset.rangecount = 1;
+                    bandwidthset.range = $<number>6;
+                    addeventaction(&(bandwidthset).action, $<number>9, $<number>10);
+                    addbandwidth(&(current->downloadpacketslist), &bandwidthset);
+                  }
+                | IF TOTAL DOWNLOAD operator NUMBER PACKET totaltime rate1 THEN action1 recovery {
+                    bandwidthset.operator = $<number>4;
+                    bandwidthset.limit = (unsigned long long)$5;
+                    bandwidthset.rangecount = 1;
+                    bandwidthset.range = $<number>7;
+                    addeventaction(&(bandwidthset).action, $<number>10, $<number>11);
+                    addbandwidth(&(current->downloadpacketslist), &bandwidthset);
+                  }
+                | IF TOTAL DOWNLOAD operator NUMBER PACKET NUMBER totaltime rate1 THEN action1 recovery {
+                    bandwidthset.operator = $<number>4;
+                    bandwidthset.limit = (unsigned long long)$5;
+                    bandwidthset.rangecount = $7;
+                    bandwidthset.range = $<number>8;
+                    addeventaction(&(bandwidthset).action, $<number>11, $<number>12);
+                    addbandwidth(&(current->downloadpacketslist), &bandwidthset);
+                  }
+                ;
+
 icmptype        : TYPE ICMPECHO { $<number>$ = ICMP_ECHO; }
                 ;
 
@@ -2103,6 +2295,10 @@ static void preparse() {
   reset_portset();
   reset_permset();
   reset_icmpset();
+  reset_netlinkstatusset();
+  reset_netlinkspeedset();
+  reset_netlinksaturationset();
+  reset_bandwidthset();
   reset_rateset();
   reset_filesystemset();
   reset_resourceset();
@@ -2125,7 +2321,7 @@ static void postparse() {
 
         /* Check that we do not start monit in daemon mode without having a poll time */
         if (!Run.polltime && (Run.isdaemon || Run.init)) {
-                LogError("Poll time not defined. Please define poll time in the\n control file or use the -d option when starting monit\n");
+                LogError("Poll time is invalid or not defined. Please define poll time in the control file\nas a number (> 0)  or use the -d option when starting monit\n");
                 cfg_errflag++;
         }
 
@@ -2157,6 +2353,9 @@ static void postparse() {
                         if (s->program->args->has_gid) {
                                 Command_setGid(s->program->C, s->program->args->gid);
                         }
+                } else if (s->type == TYPE_NET && ! s->netlinkstatuslist) {
+                        addeventaction(&(netlinkstatusset).action, ACTION_ALERT, ACTION_ALERT);
+                        addnetlinkstatus(s, &netlinkstatusset);
                 }
         }
 
@@ -2237,8 +2436,6 @@ static Service_T createservice(int type, char *name, char *value, int (*check)(S
   addeventaction(&(current)->action_EXEC,     ACTION_ALERT,     ACTION_ALERT);
   addeventaction(&(current)->action_INVALID,  ACTION_RESTART,   ACTION_ALERT);
   addeventaction(&(current)->action_NONEXIST, ACTION_RESTART,   ACTION_ALERT);
-  addeventaction(&(current)->action_PID,      ACTION_ALERT,     ACTION_IGNORE);
-  addeventaction(&(current)->action_PPID,     ACTION_ALERT,     ACTION_IGNORE);
   addeventaction(&(current)->action_FSFLAG,   ACTION_ALERT,     ACTION_IGNORE);
 
   /* Initialize internal event handlers */
@@ -2531,6 +2728,40 @@ static void adduptime(Uptime_T uu) {
 
 
 /*
+ * Add a new Pid object to the current service pid list
+ */
+static void addpid(Pid_T pp) {
+  ASSERT(pp);
+
+  Pid_T p;
+  NEW(p);
+  p->action = pp->action;
+
+  p->next = current->pidlist;
+  current->pidlist = p;
+
+  reset_pidset();
+}
+
+
+/*
+ * Add a new PPid object to the current service ppid list
+ */
+static void addppid(Pid_T pp) {
+  ASSERT(pp);
+
+  Pid_T p;
+  NEW(p);
+  p->action = pp->action;
+
+  p->next = current->ppidlist;
+  current->ppidlist = p;
+
+  reset_ppidset();
+}
+
+
+/*
  * Set Checksum object in the current service
  */
 static void addchecksum(Checksum_T cs) {
@@ -2600,6 +2831,85 @@ static void addperm(Perm_T ps) {
   current->perm = p;
   reset_permset();
 
+}
+
+
+static void addnetlinkstatus(Service_T s, NetLinkStatus_T L) {
+  ASSERT(L);
+
+  NetLinkStatus_T l;
+  NEW(l);
+  l->action = L->action;
+
+  l->next = s->netlinkstatuslist;
+  s->netlinkstatuslist = l;
+
+  reset_netlinkstatusset();
+}
+
+
+static void addnetlinkspeed(Service_T s, NetLinkSpeed_T L) {
+  ASSERT(L);
+
+  NetLinkSpeed_T l;
+  NEW(l);
+  l->action = L->action;
+
+  l->next = s->netlinkspeedlist;
+  s->netlinkspeedlist = l;
+
+  reset_netlinkspeedset();
+}
+
+
+static void addnetlinksaturation(Service_T s, NetLinkSaturation_T L) {
+  ASSERT(L);
+
+  NetLinkSaturation_T l;
+  NEW(l);
+  l->operator = L->operator;
+  l->limit = L->limit;
+  l->action = L->action;
+
+  l->next = s->netlinksaturationlist;
+  s->netlinksaturationlist = l;
+
+  reset_netlinksaturationset();
+}
+
+
+/*
+ * Return Bandwidth object
+ */
+static void addbandwidth(Bandwidth_T *list, Bandwidth_T b) {
+        ASSERT(list);
+        ASSERT(b);
+
+        if (b->rangecount * b->range > 24 * TIME_HOUR) {
+                yyerror2("Maximum range for total test is 24 hours");
+        } else if (b->range == TIME_MINUTE && b->rangecount > 60) {
+                yyerror2("Maximum value for [minute(s)] unit is 60");
+        } else if (b->range == TIME_HOUR && b->rangecount > 24) {
+                yyerror2("Maximum value for [hour(s)] unit is 24");
+        } else if (b->range == TIME_DAY && b->rangecount > 1) {
+                yyerror2("Maximum value for [day(s)] unit is 1");
+        } else {
+                if (b->range == TIME_DAY) {
+                        // translate last day -> last 24 hours
+                        b->rangecount = 24;
+                        b->range = TIME_HOUR;
+                }
+                Bandwidth_T bandwidth;
+                NEW(bandwidth);
+                bandwidth->operator = b->operator;
+                bandwidth->limit = b->limit;
+                bandwidth->rangecount = b->rangecount;
+                bandwidth->range = b->range;
+                bandwidth->action = b->action;
+                bandwidth->next = *list;
+                *list = bandwidth;
+        }
+        reset_bandwidthset();
 }
 
 
@@ -3463,6 +3773,49 @@ static void reset_uptimeset() {
   uptimeset.operator = Operator_Equal;
   uptimeset.uptime = 0;
   uptimeset.action = NULL;
+}
+
+
+static void reset_netlinkstatusset() {
+  netlinkstatusset.action = NULL;
+}
+
+
+static void reset_netlinkspeedset() {
+  netlinkspeedset.action = NULL;
+}
+
+
+static void reset_netlinksaturationset() {
+  netlinksaturationset.limit = 0.;
+  netlinksaturationset.operator = Operator_Equal;
+  netlinksaturationset.action = NULL;
+}
+
+
+/*
+ * Reset the Bandwidth set to default values
+ */
+static void reset_bandwidthset() {
+  bandwidthset.operator = Operator_Equal;
+  bandwidthset.limit = 0ULL;
+  bandwidthset.action = NULL;
+}
+
+
+/*
+ * Reset the Pid set to default values
+ */
+static void reset_pidset() {
+  pidset.action = NULL;
+}
+
+
+/*
+ * Reset the PPid set to default values
+ */
+static void reset_ppidset() {
+  ppidset.action = NULL;
 }
 
 

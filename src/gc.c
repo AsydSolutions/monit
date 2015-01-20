@@ -53,15 +53,20 @@ static void _gcptl(Timestamp_T *);
 static void _gcparl(ActionRate_T *);
 static void _gc_action(Action_T *);
 static void _gc_eventaction(EventAction_T *);
-static void _gc_inf(Info_T *);
 static void _gcpdl(Dependant_T *);
 static void _gcso(Size_T *);
+static void _gcnetlinkstatus(NetLinkStatus_T *);
+static void _gcnetlinkspeed(NetLinkSpeed_T *);
+static void _gcnetlinksaturation(NetLinkSaturation_T *);
+static void _gcbandwidth(Bandwidth_T *);
 static void _gcmatch(Match_T *);
 static void _gcchecksum(Checksum_T *);
 static void _gcperm(Perm_T *);
 static void _gcstatus(Status_T *);
 static void _gcuid(Uid_T *);
 static void _gcgid(Gid_T *);
+static void _gcpid(Pid_T *);
+static void _gcppid(Pid_T *);
 static void _gcgrc(Generic_T *);
 static void _gcath(Auth_T *);
 static void _gc_mmonit(Mmonit_T *);
@@ -212,9 +217,6 @@ static void _gc_service(Service_T *s) {
         if((*s)->resourcelist)
                 _gcpql(&(*s)->resourcelist);
 
-        if((*s)->inf)
-                _gc_inf(&(*s)->inf);
-
         if((*s)->timestamplist)
                 _gcptl(&(*s)->timestamplist);
 
@@ -223,6 +225,27 @@ static void _gc_service(Service_T *s) {
 
         if((*s)->sizelist)
                 _gcso(&(*s)->sizelist);
+
+        if((*s)->netlinkstatuslist)
+                _gcnetlinkstatus(&(*s)->netlinkstatuslist);
+
+        if((*s)->netlinkspeedlist)
+                _gcnetlinkspeed(&(*s)->netlinkspeedlist);
+
+        if((*s)->netlinksaturationlist)
+                _gcnetlinksaturation(&(*s)->netlinksaturationlist);
+
+        if((*s)->uploadbyteslist)
+                _gcbandwidth(&(*s)->uploadbyteslist);
+
+        if((*s)->uploadpacketslist)
+                _gcbandwidth(&(*s)->uploadpacketslist);
+
+        if((*s)->downloadbyteslist)
+                _gcbandwidth(&(*s)->downloadbyteslist);
+
+        if((*s)->downloadpacketslist)
+                _gcbandwidth(&(*s)->downloadpacketslist);
 
         if((*s)->matchlist)
                 _gcmatch(&(*s)->matchlist);
@@ -251,6 +274,12 @@ static void _gc_service(Service_T *s) {
         if((*s)->gid)
                 _gcgid(&(*s)->gid);
 
+        if((*s)->pidlist)
+                _gcpid(&(*s)->pidlist);
+
+        if((*s)->ppidlist)
+                _gcppid(&(*s)->ppidlist);
+
         if((*s)->dependantlist)
                 _gcpdl(&(*s)->dependantlist);
 
@@ -272,12 +301,6 @@ static void _gc_service(Service_T *s) {
         if((*s)->action_NONEXIST)
                 _gc_eventaction(&(*s)->action_NONEXIST);
 
-        if((*s)->action_PID)
-                _gc_eventaction(&(*s)->action_PID);
-
-        if((*s)->action_PPID)
-                _gc_eventaction(&(*s)->action_PPID);
-
         if((*s)->action_FSFLAG)
                 _gc_eventaction(&(*s)->action_FSFLAG);
 
@@ -295,6 +318,12 @@ static void _gc_service(Service_T *s) {
 
         if((*s)->eventlist)
                 gc_event(&(*s)->eventlist);
+
+        if((*s)->inf) {
+                if ((*s)->type == TYPE_NET)
+                        NetStatistics_free(&((*s)->inf->priv.net.stats));
+                FREE((*s)->inf);
+        }
 
         FREE((*s)->name);
         FREE((*s)->path);
@@ -479,12 +508,6 @@ static void _gcpql(Resource_T *q) {
 }
 
 
-static void _gc_inf(Info_T *i) {
-        ASSERT(i);
-        FREE(*i);
-}
-
-
 static void _gcptl(Timestamp_T *p) {
         ASSERT(p);
 
@@ -523,6 +546,49 @@ static void _gcso(Size_T *s) {
 
         FREE(*s);
 
+}
+
+static void _gcnetlinkstatus(NetLinkStatus_T *l) {
+        ASSERT(l);
+
+        if((*l)->next)
+                _gcnetlinkstatus(&(*l)->next);
+        if((*l)->action)
+                _gc_eventaction(&(*l)->action);
+        FREE(*l);
+}
+
+
+static void _gcnetlinkspeed(NetLinkSpeed_T *l) {
+        ASSERT(l);
+
+        if((*l)->next)
+                _gcnetlinkspeed(&(*l)->next);
+        if((*l)->action)
+                _gc_eventaction(&(*l)->action);
+        FREE(*l);
+}
+
+
+static void _gcnetlinksaturation(NetLinkSaturation_T *l) {
+        ASSERT(l);
+
+        if((*l)->next)
+                _gcnetlinksaturation(&(*l)->next);
+        if((*l)->action)
+                _gc_eventaction(&(*l)->action);
+        FREE(*l);
+}
+
+
+static void _gcbandwidth(Bandwidth_T *b) {
+        ASSERT(b);
+
+        if((*b)->next)
+                _gcbandwidth(&(*b)->next);
+        if((*b)->action)
+                _gc_eventaction(&(*b)->action);
+        FREE(*b);
 }
 
 static void _gcmatch(Match_T *s) {
@@ -605,6 +671,22 @@ static void _gcgid(Gid_T *s) {
 
         FREE(*s);
 
+}
+
+
+static void _gcpid(Pid_T *s) {
+        ASSERT(s);
+        if((*s)->action)
+                _gc_eventaction(&(*s)->action);
+        FREE(*s);
+}
+
+
+static void _gcppid(Pid_T *s) {
+        ASSERT(s);
+        if((*s)->action)
+                _gc_eventaction(&(*s)->action);
+        FREE(*s);
 }
 
 
