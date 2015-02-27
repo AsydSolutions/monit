@@ -36,31 +36,31 @@
  *
  *  @file
  */
-int check_ssh(Socket_T socket) {
+boolean_t check_ssh(Socket_T socket) {
 
-  char  buf[STRLEN];
+        char  buf[STRLEN];
 
-  ASSERT(socket);
+        ASSERT(socket);
 
-  if(!socket_readln(socket, buf, sizeof(buf))) {
-    socket_setError(socket, "SSH: error receiving identification string -- %s", STRERROR);
-    return FALSE;
-  }
+        if (! socket_readln(socket, buf, sizeof(buf))) {
+                socket_setError(socket, "SSH: error receiving identification string -- %s", STRERROR);
+                return false;
+        }
 
-  if(! Str_startsWith(buf, "SSH-")) {
-    socket_setError(socket, "SSH: protocol error %s", buf);
-    return FALSE;
-  }
+        if (! Str_startsWith(buf, "SSH-")) {
+                socket_setError(socket, "SSH: protocol error %s", buf);
+                return false;
+        }
 
-  /* send identification string back to server */
-  if(socket_write(socket, buf, strlen(buf)) <= 0) {
-    socket_setError(socket, "SSH: error sending identification string -- %s", STRERROR);
-    return FALSE;
-  }
+        /* send identification string back to server */
+        if (socket_write(socket, buf, strlen(buf)) <= 0) {
+                socket_setError(socket, "SSH: error sending identification string -- %s", STRERROR);
+                return false;
+        }
 
-  /* Read one extra line to prevent the "Read from socket failed" warning */
-  socket_readln(socket, buf, sizeof(buf));
+        /* Read one extra line to prevent the "Read from socket failed" warning */
+        socket_readln(socket, buf, sizeof(buf));
 
-  return TRUE;
+        return true;
 
 }

@@ -52,10 +52,9 @@
 #include <unistd.h>
 #endif
 
-#include "ssl.h"
+#include "monit.h"
 #include "net.h"
 #include "socket.h"
-#include "monit.h"
 #include "process.h"
 #include "device.h"
 
@@ -73,21 +72,24 @@
 /**
  * Show all services in the service list.
  */
-int status(char *level) {
+boolean_t status(char *level) {
 
 #define LINE 1024
 
-        int status = FALSE;
-        Socket_T S = NULL;
+        boolean_t status = false;
         char buf[LINE];
         char *auth = NULL;
 
-        if(!exist_daemon()) {
+        if (! exist_daemon()) {
                 LogError("Status not available -- the monit daemon is not running\n");
                 return status;
         }
-        S = socket_create_t(Run.bind_addr ? Run.bind_addr : "localhost", Run.httpdport, SOCKET_TCP,
-                            (Ssl_T){.use_ssl = Run.httpdssl, .clientpemfile = Run.httpsslclientpem}, NET_TIMEOUT);
+        Socket_T S;
+        if (Run.httpd.flags & Httpd_Net)
+                // FIXME: Monit HTTP support IPv4 only currently ... when IPv6 is implemented change the family to Socket_Ip
+                S = socket_create_t(Run.httpd.socket.net.address ? Run.httpd.socket.net.address : "localhost", Run.httpd.socket.net.port, SOCKET_TCP, Socket_Ip4, (SslOptions_T){.use_ssl = Run.httpd.flags & Httpd_Ssl, .clientpemfile = Run.httpd.socket.net.ssl.clientpem}, NET_TIMEOUT);
+        else
+                S = socket_create_u(Run.httpd.socket.unix.path, SOCKET_TCP, NET_TIMEOUT);
         if (! S) {
                 LogError("Error connecting to the monit daemon\n");
                 return status;
@@ -96,21 +98,21 @@ int status(char *level) {
         auth = Util_getBasicAuthHeaderMonit();
         socket_print(S,
                      "GET /_status?format=text&level=%s HTTP/1.0\r\n%s\r\n",
-                     level, auth?auth:"");
+                     level, auth ? auth : "");
         FREE(auth);
 
         /* Read past HTTP headers and check status */
-        while(socket_readln(S, buf, LINE)) {
-                if(*buf == '\n' || *buf == '\r')
+        while (socket_readln(S, buf, LINE)) {
+                if (*buf == '\n' || *buf == '\r')
                         break;
-                if(Str_startsWith(buf, "HTTP/1.0 200"))
-                        status = TRUE;
+                if (Str_startsWith(buf, "HTTP/1.0 200"))
+                        status = true;
         }
 
-        if(!status) {
+        if (! status) {
                 LogError("Cannot read status from the monit daemon\n");
         } else {
-                while(socket_readln(S, buf, LINE)) {
+                while (socket_readln(S, buf, LINE)) {
                         printf("%s", buf);
                 }
         }

@@ -77,15 +77,46 @@
 #include <errno.h>
 #endif
 
-#include "ssl.h"
-#include "socket.h"
+#ifdef HAVE_NETDB_H
+#include <netdb.h>
+#endif
+
+#ifdef HAVE_MACH_BOOLEAN_H
+#include <mach/boolean.h>
+#endif
+#ifdef HAVE_UVM_UVM_PARAM_H
+#include <uvm/uvm_param.h>
+#endif
+#ifdef HAVE_VM_VM_H
+#include <vm/vm.h>
+#endif
+
+
+//FIXME: we can export this type in libmonit
+#ifndef HAVE_BOOLEAN_T
+#undef true
+#undef false
+typedef enum {
+        false = 0,
+        true
+} __attribute__((__packed__)) boolean_t;
+#else
+#define false 0
+#define true  1
+#endif
+
+
+#include "Ssl.h"
+#include "SslOptions.h"
+
 
 // libmonit
 #include "system/Command.h"
 #include "system/Process.h"
 #include "util/Str.h"
 #include "util/StringBuffer.h"
-#include "system/NetStatistics.h"
+#include "system/Link.h"
+#include "thread/Thread.h"
 
 
 #define MONITRC            "monitrc"
@@ -119,31 +150,29 @@
 #define EXEC_TIMEOUT       30
 #define PROGRAM_TIMEOUT    300
 
-#define START_HTTP         1
-#define STOP_HTTP          2
 
-#define TRUE               1
-#define FALSE              0
+typedef enum {
+        Httpd_Start = 1,
+        Httpd_Stop
+} __attribute__((__packed__)) Httpd_Action;
 
-#define MONITOR_NOT        0x0
-#define MONITOR_YES        0x1
-#define MONITOR_INIT       0x2
-#define MONITOR_WAITING    0x4
 
-#define EVERY_CYCLE        0
-#define EVERY_SKIPCYCLES   1
-#define EVERY_CRON         2
-#define EVERY_NOTINCRON    3
+typedef enum {
+        Every_Cycle = 0,
+        Every_SkipCycles,
+        Every_Cron,
+        Every_NotInCron
+} __attribute__((__packed__)) Every_Type;
 
-#define STATE_SUCCEEDED    0
-#define STATE_FAILED       1
-#define STATE_CHANGED      2
-#define STATE_CHANGEDNOT   3
-#define STATE_INIT         4
 
-#define MODE_ACTIVE        0
-#define MODE_PASSIVE       1
-#define MODE_MANUAL        2
+typedef enum {
+        State_Succeeded = 0,
+        State_Failed,
+        State_Changed,
+        State_ChangedNot,
+        State_Init
+} __attribute__((__packed__)) State_Type;
+
 
 typedef enum {
         Operator_Greater = 0,
@@ -151,86 +180,151 @@ typedef enum {
         Operator_Equal,
         Operator_NotEqual,
         Operator_Changed
-} Operator_Type;
+} __attribute__((__packed__)) Operator_Type;
 
-#define TIME_SECOND        1
-#define TIME_MINUTE        60
-#define TIME_HOUR          3600
-#define TIME_DAY           86400
-#define TIME_MONTH         2678400
 
-#define ACTION_IGNORE      0
-#define ACTION_ALERT       1
-#define ACTION_RESTART     2
-#define ACTION_STOP        3
-#define ACTION_EXEC        4
-#define ACTION_UNMONITOR   5
-#define ACTION_START       6
-#define ACTION_MONITOR     7
+typedef enum {
+        Socket_Unix = 0,
+        Socket_Ip,      // IP, version not specified (IPv4 or IPv6)
+        Socket_Ip4,     // IPv4 only
+        Socket_Ip6      // IPv6 only
+} __attribute__((__packed__)) Socket_Family;
 
-#define TYPE_FILESYSTEM    0
-#define TYPE_DIRECTORY     1
-#define TYPE_FILE          2
-#define TYPE_PROCESS       3
-#define TYPE_HOST          4
-#define TYPE_SYSTEM        5
-#define TYPE_FIFO          6
-#define TYPE_PROGRAM       7
-#define TYPE_NET           8
 
-#define RESOURCE_ID_CPU_PERCENT       1
-#define RESOURCE_ID_MEM_PERCENT       2
-#define RESOURCE_ID_MEM_KBYTE         3
-#define RESOURCE_ID_LOAD1             4
-#define RESOURCE_ID_LOAD5             5
-#define RESOURCE_ID_LOAD15            6
-#define RESOURCE_ID_CHILDREN          7
-#define RESOURCE_ID_TOTAL_MEM_KBYTE   8
-#define RESOURCE_ID_TOTAL_MEM_PERCENT 9
-#define RESOURCE_ID_INODE             10
-#define RESOURCE_ID_SPACE             11
-#define RESOURCE_ID_CPUUSER           12
-#define RESOURCE_ID_CPUSYSTEM         13
-#define RESOURCE_ID_CPUWAIT           14
-#define RESOURCE_ID_TOTAL_CPU_PERCENT 15
-#define RESOURCE_ID_SWAP_PERCENT      16
-#define RESOURCE_ID_SWAP_KBYTE        17
+typedef enum {
+        Httpd_Disabled                    = 0x0,
+        Httpd_Net                         = 0x1,  // IP
+        Httpd_Unix                        = 0x2,  // Unix socket
+        Httpd_Ssl                         = 0x4,  // SSL enabled
+        Httpd_Signature                   = 0x8,  // Server Signature enabled
+        Httpd_AllowSelfSignedCertificates = 0x10  // Server Signature enabled
+} __attribute__((__packed__)) Httpd_Flags;
 
-#define DIGEST_CLEARTEXT   1
-#define DIGEST_CRYPT       2
-#define DIGEST_MD5         3
-#define DIGEST_PAM         4
 
-#define UNIT_BYTE          1
-#define UNIT_KILOBYTE      1024
-#define UNIT_MEGABYTE      1048576
-#define UNIT_GIGABYTE      1073741824
+typedef enum {
+        Time_Second = 1,
+        Time_Minute = 60,
+        Time_Hour   = 3600,
+        Time_Day    = 86400,
+        Time_Month  = 2678400
+} __attribute__((__packed__)) Time_Type;
 
-#define HASH_UNKNOWN       0
-#define HASH_MD5           1
-#define HASH_SHA1          2
-#define DEFAULT_HASH       HASH_MD5
+
+typedef enum {
+        Action_Ignored = 0,
+        Action_Alert,
+        Action_Restart,
+        Action_Stop,
+        Action_Exec,
+        Action_Unmonitor,
+        Action_Start,
+        Action_Monitor
+} __attribute__((__packed__)) Action_Type;
+
+
+typedef enum {
+        Monitor_Active = 0,
+        Monitor_Passive,
+        Monitor_Manual
+} __attribute__((__packed__)) Monitor_Mode;
+
+
+typedef enum {
+        Monitor_Not     = 0x0,
+        Monitor_Yes     = 0x1,
+        Monitor_Init    = 0x2,
+        Monitor_Waiting = 0x4
+} __attribute__((__packed__)) Monitor_State;
+
+
+typedef enum {
+        Service_Filesystem = 0,
+        Service_Directory,
+        Service_File,
+        Service_Process,
+        Service_Host,
+        Service_System,
+        Service_Fifo,
+        Service_Program,
+        Service_Net
+} __attribute__((__packed__)) Service_Type;
+
+
+typedef enum {
+        Resource_CpuPercent = 1,
+        Resource_MemoryPercent,
+        Resource_MemoryKbyte,
+        Resource_LoadAverage1m,
+        Resource_LoadAverage5m,
+        Resource_LoadAverage15m,
+        Resource_Children,
+        Resource_MemoryKbyteTotal,
+        Resource_MemoryPercentTotal,
+        Resource_Inode,
+        Resource_Space,
+        Resource_CpuUser,
+        Resource_CpuSystem,
+        Resource_CpuWait,
+        Resource_CpuPercentTotal,
+        Resource_SwapPercent,
+        Resource_SwapKbyte
+} __attribute__((__packed__)) Resource_Type;
+
+
+
+typedef enum {
+        Digest_Cleartext = 1,
+        Digest_Crypt,
+        Digest_Md5,
+        Digest_Pam
+} __attribute__((__packed__)) Digest_Type;
+
+
+typedef enum {
+        Unit_Byte     = 1,
+        Unit_Kilobyte = 1024,
+        Unit_Megabyte = 1048576,
+        Unit_Gigabyte = 1073741824
+} __attribute__((__packed__)) Unit_Type;
+
+
+typedef enum {
+        Hash_Unknown = 0,
+        Hash_Md5,
+        Hash_Sha1,
+        Hash_Default = Hash_Md5
+} __attribute__((__packed__)) Hash_Type;
+
+
+typedef enum {
+        Level_Full = 0,
+        Level_Summary
+} __attribute__((__packed__)) Level_Type;
+
+
+typedef enum {
+        Handler_Succeeded = 0x0,
+        Handler_Alert     = 0x1,
+        Handler_Mmonit    = 0x2,
+        Handler_Max       = Handler_Mmonit
+} __attribute__((__packed__)) Handler_Type;
+
+
 /* Length of the longest message digest in bytes */
-#define MD_SIZE            65
+#define MD_SIZE 65
 
-#define PROTOCOL_NULL      0
-#define PROTOCOL_HTTP      1
-#define PROTOCOL_HTTPS     2
 
-#define LEVEL_FULL         0
-#define LEVEL_SUMMARY      1
+#define ICMP_ATTEMPT_COUNT 3
+
+
+#define EXPECT_BUFFER_MAX (Unit_Kilobyte * 100 + 1)
+
 
 #define LEVEL_NAME_FULL    "full"
 #define LEVEL_NAME_SUMMARY "summary"
 
-#define HANDLER_SUCCEEDED  0x0
-#define HANDLER_ALERT      0x1
-#define HANDLER_MMONIT     0x2
-#define HANDLER_MAX        HANDLER_MMONIT
 
-#define ICMP_ATTEMPT_COUNT 3
-
-#define EXPECT_BUFFER_MAX (UNIT_KILOBYTE * 100 + 1)
+#include "socket.h"
 
 
 /** ------------------------------------------------- Special purpose macros */
@@ -252,25 +346,17 @@ Sigfunc *signal(int signo, Sigfunc * func);
 #define MAX(x,y) ((x) > (y) ? (x) : (y))
 #undef MIN
 #define MIN(x,y) ((x) < (y) ? (x) : (y))
-#define IS(a,b)  ((a&&b)?!strcasecmp(a, b):0)
+#define IS(a,b)  ((a && b) ? Str_isEqual(a, b) : false)
 #define DEBUG LogDebug
 #define FLAG(x, y) (x & y) == y
-#define NVLSTR(x) (x?x:"")
-
-
-/** ------------------------------------------------- Synchronization macros */
-
-
-#define LOCK(mutex) do { pthread_mutex_t *_yymutex = &(mutex); \
-assert(pthread_mutex_lock(_yymutex)==0);
-#define END_LOCK assert(pthread_mutex_unlock(_yymutex)==0); } while (0)
+#define NVLSTR(x) (x ? x : "")
 
 
 /** ------------------------------------------ Simple Assert Exception macro */
 
 
-#define ASSERT(e) do { if(!(e)) { LogCritical("AssertException: " #e \
-" at %s:%d\naborting..\n", __FILE__, __LINE__); abort(); } } while(0)
+#define ASSERT(e) do { if (!(e)) { LogCritical("AssertException: " #e \
+" at %s:%d\naborting..\n", __FILE__, __LINE__); abort(); } } while (0)
 
 
 /* --------------------------------------------------------- Data structures */
@@ -289,10 +375,10 @@ typedef char MD_T[MD_SIZE];
  */
 typedef struct mycommand {
         char *arg[ARGMAX];                             /**< Program with arguments */
-        int   length;                       /**< The length of the arguments array */
-        int   has_uid;          /**< TRUE if a new uid is defined for this Command */
+        short length;                       /**< The length of the arguments array */
+        boolean_t has_uid;      /**< true if a new uid is defined for this Command */
+        boolean_t has_gid;      /**< true if a new gid is defined for this Command */
         uid_t uid;         /**< The user id to switch to when running this Command */
-        int   has_gid;          /**< TRUE if a new gid is defined for this Command */
         gid_t gid;        /**< The group id to switch to when running this Command */
         unsigned timeout;     /**< Max seconds which we wait for method to execute */
 } *command_t;
@@ -300,10 +386,10 @@ typedef struct mycommand {
 
 /** Defines an event action object */
 typedef struct myaction {
-        int       id;                                     /**< Action to be done */
-        command_t exec;                    /**< Optional command to be executed  */
-        unsigned  count;           /**< Event count needed to trigger the action */
-        unsigned  cycles;    /**< Cycles during which count limit can be reached */
+        Action_Type id;                                   /**< Action to be done */
+        unsigned char count;       /**< Event count needed to trigger the action */
+        unsigned char cycles;/**< Cycles during which count limit can be reached */
+        command_t exec;                     /**< Optional command to be executed */
 } *Action_T;
 
 
@@ -342,8 +428,8 @@ typedef struct myrequest {
 /** Defines an event notification and status receiver object */
 typedef struct mymmonit {
         URL_T url;                                             /**< URL definition */
-        Ssl_T ssl;                                             /**< SSL definition */
-        int   timeout;              /**< The timeout to wait for connection or i/o */
+        SslOptions_T ssl;                                      /**< SSL definition */
+        int timeout;                /**< The timeout to wait for connection or i/o */
 
         /** For internal use */
         struct mymmonit *next;                         /**< next receiver in chain */
@@ -371,7 +457,7 @@ typedef struct mymailserver {
         int   port;                                               /**< Server port */
         char *username;                               /** < Username for SMTP_AUTH */
         char *password;                               /** < Password for SMTP_AUTH */
-        Ssl_T ssl;                                             /**< SSL definition */
+        SslOptions_T ssl;                                      /**< SSL definition */
 
         /** For internal use */
         struct mymailserver *next;        /**< Next server to try on connect error */
@@ -382,22 +468,23 @@ typedef struct myauthentication {
         char *uname;                  /**< User allowed to connect to monit httpd */
         char *passwd;                                /**< The users password data */
         char *groupname;                                      /**< PAM group name */
-        int   digesttype;                      /**< How did we store the password */
-        int   is_readonly;     /**< TRUE if this is a read-only authenticated user*/
+        Digest_Type digesttype;                /**< How did we store the password */
+        boolean_t is_readonly; /**< true if this is a read-only authenticated user*/
         struct myauthentication *next;       /**< Next credential or NULL if last */
 } *Auth_T;
 
 
 /** Defines process tree - data storage backend*/
 typedef struct myprocesstree {
-        int           pid;
-        int           ppid;
-        int           status_flag;
-        int           visited;
+        boolean_t     visited;
+        boolean_t     zombie;
+        pid_t         pid;
+        pid_t         ppid;
+        int           parent;
         int           children_num;
         int           children_sum;
-        int           cpu_percent;
-        int           cpu_percent_sum;
+        short         cpu_percent;
+        short         cpu_percent_sum;
         uid_t         uid;
         uid_t         euid;
         gid_t         gid;
@@ -412,33 +499,32 @@ typedef struct myprocesstree {
         long          cputime;                                   /**< 1/10 seconds */
         long          cputime_prev;                              /**< 1/10 seconds */
 
-        int           parent;
         int          *children;
 } ProcessTree_T;
 
 
 /** Defines data for systemwide statistic */
 typedef struct mysysteminfo {
-        struct timeval collected;                    /**< When were data collected */
         int cpus;                                              /**< Number of CPUs */
-        double loadavg[3];                                /**< Load average triple */
+        short total_mem_percent;       /**< Total real memory in use in the system */
+        short total_swap_percent;             /**< Total swap in use in the system */
+        short total_cpu_user_percent;    /**< Total CPU in use in user space (pct.)*/
+        short total_cpu_syst_percent;  /**< Total CPU in use in kernel space (pct.)*/
+        short total_cpu_wait_percent;       /**< Total CPU in use in waiting (pct.)*/
         unsigned long mem_kbyte_max;               /**< Maximal system real memory */
         unsigned long swap_kbyte_max;                               /**< Swap size */
         unsigned long total_mem_kbyte; /**< Total real memory in use in the system */
         unsigned long total_swap_kbyte;       /**< Total swap in use in the system */
-        int    total_mem_percent;      /**< Total real memory in use in the system */
-        int    total_swap_percent;            /**< Total swap in use in the system */
-        int    total_cpu_user_percent;   /**< Total CPU in use in user space (pct.)*/
-        int    total_cpu_syst_percent; /**< Total CPU in use in kernel space (pct.)*/
-        int    total_cpu_wait_percent;      /**< Total CPU in use in waiting (pct.)*/
+        double loadavg[3];                                /**< Load average triple */
         struct utsname uname;        /**< Platform information provided by uname() */
+        struct timeval collected;                    /**< When were data collected */
 } SystemInfo_T;
 
 
 /** Defines a protocol object with protocol functions */
 typedef struct Protocol_T {
         const char *name;                                       /**< Protocol name */
-        int(*check)(Socket_T);                 /**< Protocol verification function */
+        boolean_t (*check)(Socket_T);          /**< Protocol verification function */
 } *Protocol_T;
 
 
@@ -455,53 +541,54 @@ typedef struct mygenericproto {
 } *Generic_T;
 
 /** Defines a port object */
+//FIXME: use unions for protocol-specific and sockettype-specific data
 typedef struct myport {
         char *hostname;                                     /**< Hostname to check */
-        List_T http_headers; /**< Optional list of HTTP headers to send with request */
+        List_T http_headers;    /**< Optional list of headers to send with request */
         char *request;                              /**< Specific protocol request */
         char *request_checksum;     /**< The optional checksum for a req. document */
-        char *request_hostheader;            /**< The optional Host: header to use. Deprecated */
+        char *request_hostheader;/**< The optional Host: header to use. Deprecated */
         char *pathname;                   /**< Pathname, in case of an UNIX socket */
         Generic_T generic;                                /**< Generic test handle */
         volatile int socket;                       /**< Socket used for connection */
-        int type;                   /**< Socket type used for connection (UDP/TCP) */
-        int family;             /**< Socket family used for connection (INET/UNIX) */
         int port;                                                  /**< Portnumber */
-        int request_hashtype;   /**< The optional type of hash for a req. document */
+        int type;                   /**< Socket type used for connection (UDP/TCP) */
+        Socket_Family family;    /**< Socket family used for connection (NET/UNIX) */
+        Hash_Type request_hashtype; /**< The optional type of hash for a req. document */
+        Operator_Type operator;                           /**< Comparison operator */
+        boolean_t is_available;          /**< true if the server/port is available */
         int maxforward;            /**< Optional max forward for protocol checking */
         int timeout; /**< The timeout in millseconds to wait for connect or read i/o */
         int retry;       /**< Number of connection retry before reporting an error */
-        int is_available;                /**< TRUE if the server/port is available */
         int version;                                         /**< Protocol version */
-        Operator_Type operator;                           /**< Comparison operator */
         int status;                                           /**< Protocol status */
         double response;                      /**< Socket connection response time */
         EventAction_T action;  /**< Description of the action upon event occurence */
         /** Apache-status specific parameters */
         struct apache_status {
                 short loglimit;                  /**< Max percentage of logging processes */
-                short loglimitOP;                                  /**< loglimit operator */
                 short closelimit;             /**< Max percentage of closinging processes */
-                short closelimitOP;                              /**< closelimit operator */
                 short dnslimit;         /**< Max percentage of processes doing DNS lookup */
-                short dnslimitOP;                                  /**< dnslimit operator */
                 short keepalivelimit;          /**< Max percentage of keepalive processes */
-                short keepalivelimitOP;                      /**< keepalivelimit operator */
                 short replylimit;               /**< Max percentage of replying processes */
-                short replylimitOP;                              /**< replylimit operator */
                 short requestlimit;     /**< Max percentage of processes reading requests */
-                short requestlimitOP;                          /**< requestlimit operator */
                 short startlimit;            /**< Max percentage of processes starting up */
-                short startlimitOP;                              /**< startlimit operator */
                 short waitlimit;  /**< Min percentage of processes waiting for connection */
-                short waitlimitOP;                                /**< waitlimit operator */
                 short gracefullimit;/**< Max percentage of processes gracefully finishing */
-                short gracefullimitOP;                        /**< gracefullimit operator */
                 short cleanuplimit;      /**< Max percentage of processes in idle cleanup */
-                short cleanuplimitOP;                          /**< cleanuplimit operator */
+                Operator_Type loglimitOP;                          /**< loglimit operator */
+                Operator_Type closelimitOP;                      /**< closelimit operator */
+                Operator_Type dnslimitOP;                          /**< dnslimit operator */
+                Operator_Type keepalivelimitOP;              /**< keepalivelimit operator */
+                Operator_Type replylimitOP;                      /**< replylimit operator */
+                Operator_Type requestlimitOP;                  /**< requestlimit operator */
+                Operator_Type startlimitOP;                      /**< startlimit operator */
+                Operator_Type waitlimitOP;                        /**< waitlimit operator */
+                Operator_Type gracefullimitOP;                /**< gracefullimit operator */
+                Operator_Type cleanuplimitOP;                  /**< cleanuplimit operator */
         } ApacheStatus;
 
-        Ssl_T SSL;                                             /**< SSL definition */
+        SslOptions_T SSL;                                      /**< SSL definition */
         Protocol_T protocol;     /**< Protocol object for testing a port's service */
         Request_T url_request;             /**< Optional url client request object */
 
@@ -515,7 +602,7 @@ typedef struct myicmp {
         int type;                                              /**< ICMP type used */
         int count;                                   /**< ICMP echo requests count */
         int timeout;         /**< The timeout in milliseconds to wait for response */
-        int is_available;                     /**< TRUE if the server is available */
+        boolean_t is_available;               /**< true if the server is available */
         double response;                              /**< ICMP ECHO response time */
         EventAction_T action;  /**< Description of the action upon event occurence */
 
@@ -551,9 +638,9 @@ typedef struct mydependant {
 
 /** Defines resource data */
 typedef struct myresource {
-        int  resource_id;                              /**< Which value is checked */
-        long limit;                                     /**< Limit of the resource */
+        Resource_Type resource_id;                     /**< Which value is checked */
         Operator_Type operator;                           /**< Comparison operator */
+        long limit;                                     /**< Limit of the resource */
         EventAction_T action;  /**< Description of the action upon event occurence */
 
         /** For internal use */
@@ -563,9 +650,9 @@ typedef struct myresource {
 
 /** Defines timestamp object */
 typedef struct mytimestamp {
+        boolean_t test_changes;       /**< true if we only should test for changes */
         Operator_Type operator;                           /**< Comparison operator */
         int  time;                                        /**< Timestamp watermark */
-        int  test_changes;            /**< TRUE if we only should test for changes */
         time_t timestamp; /**< The original last modified timestamp for this object*/
         EventAction_T action;  /**< Description of the action upon event occurence */
 
@@ -588,7 +675,7 @@ typedef struct myactionrate {
 /** Defines when to run a check for a service. This type suports both the old
  cycle based every statement and the new cron-format version */
 typedef struct myevery {
-        int type; /**< 0 = not set, 1 = cycle, 2 = cron, 3 = negated cron */
+        Every_Type type; /**< 0 = not set, 1 = cycle, 2 = cron, 3 = negated cron */
         time_t last_run;
         union {
                 struct {
@@ -601,9 +688,9 @@ typedef struct myevery {
 
 
 typedef struct mystatus {
-        int  initialized;                      /**< TRUE if status was initialized */
-        int return_value;                /**< Return value of the program to check */
+        boolean_t initialized;                 /**< true if status was initialized */
         Operator_Type operator;                           /**< Comparison operator */
+        int return_value;                /**< Return value of the program to check */
         EventAction_T action;  /**< Description of the action upon event occurence */
 
         /** For internal use */
@@ -624,10 +711,10 @@ typedef struct myprogram {
 
 /** Defines size object */
 typedef struct mysize {
+        boolean_t initialized;                   /**< true if size was initialized */
+        boolean_t test_changes;       /**< true if we only should test for changes */
         Operator_Type operator;                           /**< Comparison operator */
         unsigned long long size;                               /**< Size watermark */
-        int  test_changes;            /**< TRUE if we only should test for changes */
-        int  initialized;                        /**< TRUE if size was initialized */
         EventAction_T action;  /**< Description of the action upon event occurence */
 
         /** For internal use */
@@ -646,39 +733,39 @@ typedef struct myuptime {
 } *Uptime_T;
 
 
-typedef struct mynetlinkstatus {
+typedef struct mylinkstatus {
         EventAction_T action;  /**< Description of the action upon event occurence */
 
         /** For internal use */
-        struct mynetlinkstatus *next;                      /**< next link in chain */
-} *NetLinkStatus_T;
+        struct mylinkstatus *next;                      /**< next link in chain */
+} *LinkStatus_T;
 
 
-typedef struct mynetlinkspeed {
+typedef struct mylinkspeed {
         int duplex;                                        /**< Last duplex status */
         long long speed;                                     /**< Last speed [bps] */
         EventAction_T action;  /**< Description of the action upon event occurence */
 
         /** For internal use */
-        struct mynetlinkspeed *next;                       /**< next link in chain */
-} *NetLinkSpeed_T;
+        struct mylinkspeed *next;                       /**< next link in chain */
+} *LinkSpeed_T;
 
 
-typedef struct mynetlinksaturation {
+typedef struct mylinksaturation {
         Operator_Type operator;                           /**< Comparison operator */
         float limit;                                     /**< Saturation limit [%] */
         EventAction_T action;  /**< Description of the action upon event occurence */
 
         /** For internal use */
-        struct mynetlinksaturation *next;                  /**< next link in chain */
-} *NetLinkSaturation_T;
+        struct mylinksaturation *next;                  /**< next link in chain */
+} *LinkSaturation_T;
 
 
 typedef struct mybandwidth {
         Operator_Type operator;                           /**< Comparison operator */
         unsigned long long limit;                              /**< Data watermark */
         int rangecount;                            /**< Time range to watch: count */
-        int range;                                  /**< Time range to watch: unit */
+        Time_Type range;                                  /**< Time range to watch: unit */
         EventAction_T action;  /**< Description of the action upon event occurence */
 
         /** For internal use */
@@ -688,25 +775,26 @@ typedef struct mybandwidth {
 
 /** Defines checksum object */
 typedef struct mychecksum {
+        boolean_t initialized;               /**< true if checksum was initialized */
+        boolean_t test_changes;       /**< true if we only should test for changes */
+        Hash_Type type;                   /**< The type of hash (e.g. md5 or sha1) */
         MD_T  hash;                     /**< A checksum hash computed for the path */
-        int   type;                       /**< The type of hash (e.g. md5 or sha1) */
         int   length;                                      /**< Length of the hash */
-        int   test_changes;           /**< TRUE if we only should test for changes */
-        int   initialized;                   /**< TRUE if checksum was initialized */
         EventAction_T action;  /**< Description of the action upon event occurence */
 } *Checksum_T;
 
 
 /** Defines permission object */
 typedef struct myperm {
-        int       perm;                                     /**< Access permission */
+        boolean_t test_changes;       /**< true if we only should test for changes */
+        int perm;                                           /**< Access permission */
         EventAction_T action;  /**< Description of the action upon event occurence */
 } *Perm_T;
 
 /** Defines match object */
 typedef struct mymatch {
-        int     ignore;                                          /**< Ignore match */
-        int     not;                                             /**< Invert match */
+        boolean_t ignore;                                        /**< Ignore match */
+        boolean_t not;                                           /**< Invert match */
         char    *match_string;                                   /**< Match string */
         char    *match_path;                         /**< File with matching rules */
 #ifdef HAVE_REGEX_H
@@ -743,12 +831,28 @@ typedef struct mypid {
 } *Pid_T;
 
 
+typedef struct myfsflag {
+        EventAction_T action;  /**< Description of the action upon event occurence */
+
+        /** For internal use */
+        struct myfsflag *next;
+} *Fsflag_T;
+
+
+typedef struct mynonexist {
+        EventAction_T action;  /**< Description of the action upon event occurence */
+
+        /** For internal use */
+        struct mynonexist *next;
+} *Nonexist_T;
+
+
 /** Defines filesystem configuration */
 typedef struct myfilesystem {
-        int  resource;                        /**< Whether to check inode or space */
+        Resource_Type resource;               /**< Whether to check inode or space */
         Operator_Type operator;                           /**< Comparison operator */
         long long limit_absolute;                          /**< Watermark - blocks */
-        int  limit_percent;                               /**< Watermark - percent */
+        short limit_percent;                              /**< Watermark - percent */
         EventAction_T action;  /**< Description of the action upon event occurence */
 
         /** For internal use */
@@ -758,12 +862,6 @@ typedef struct myfilesystem {
 
 /** Defines service data */
 typedef struct myinfo {
-        /* Shared */
-        mode_t  st_mode;                                           /**< Permission */
-        uid_t   st_uid;                                           /**< Owner's uid */
-        gid_t   st_gid;                                           /**< Owner's gid */
-        time_t  timestamp;                                          /**< Timestamp */
-
         union {
                 struct {
                         long long  f_bsize;                           /**< Transfer block size */
@@ -772,61 +870,84 @@ typedef struct myinfo {
                         long long  f_blocksfreetotal;           /**< Free blocks in filesystem */
                         long long  f_files;                /**< Total file nodes in filesystem */
                         long long  f_filesfree;             /**< Free file nodes in filesystem */
-                        int        inode_percent;              /**< Used inode percentage * 10 */
                         long long  inode_total;                  /**< Used inode total objects */
-                        int        space_percent;              /**< Used space percentage * 10 */
                         long long  space_total;                   /**< Used space total blocks */
-                        int        _flags;               /**< Filesystem flags from last cycle */
-                        int        flags;              /**< Filesystem flags from actual cycle */
+                        short inode_percent;                   /**< Used inode percentage * 10 */
+                        short space_percent;                   /**< Used space percentage * 10 */
+                        int _flags;                      /**< Filesystem flags from last cycle */
+                        int flags;                     /**< Filesystem flags from actual cycle */
+                        mode_t mode;                                           /**< Permission */
+                        uid_t uid;                                            /**< Owner's uid */
+                        gid_t gid;                                            /**< Owner's gid */
                 } filesystem;
 
                 struct {
-                        off_t st_size;                                               /**< Size */
+                        time_t timestamp;                                       /**< Timestamp */
+                        mode_t mode;                                           /**< Permission */
+                        uid_t uid;                                            /**< Owner's uid */
+                        gid_t gid;                                            /**< Owner's gid */
+                        off_t size;                                                  /**< Size */
                         off_t readpos;                        /**< Position for regex matching */
-                        ino_t st_ino;                                               /**< Inode */
-                        ino_t st_ino_prev;              /**< Previous inode for regex matching */
+                        ino_t inode;                                                /**< Inode */
+                        ino_t inode_prev;               /**< Previous inode for regex matching */
                         MD_T  cs_sum;                                            /**< Checksum */
                 } file;
 
                 struct {
-                        int    _pid;                          /**< Process PID from last cycle */
-                        int    _ppid;                  /**< Process parent PID from last cycle */
-                        int    pid;                         /**< Process PID from actual cycle */
-                        int    ppid;                 /**< Process parent PID from actual cycle */
-                        uid_t  uid;                                           /**< Process UID */
-                        uid_t  euid;                                /**< Effective Process UID */
-                        gid_t  gid;                                           /**< Process GID */
-                        int    status_flag;
-                        int    children;
-                        long   mem_kbyte;
-                        long   total_mem_kbyte;
-                        int    mem_percent;                               /**< percentage * 10 */
-                        int    total_mem_percent;                         /**< percentage * 10 */
-                        int    cpu_percent;                               /**< percentage * 10 */
-                        int    total_cpu_percent;                         /**< percentage * 10 */
+                        time_t timestamp;                                       /**< Timestamp */
+                        mode_t mode;                                           /**< Permission */
+                        uid_t uid;                                            /**< Owner's uid */
+                        gid_t gid;                                            /**< Owner's gid */
+                } directory;
+
+                struct {
+                        time_t timestamp;                                       /**< Timestamp */
+                        mode_t mode;                                           /**< Permission */
+                        uid_t uid;                                            /**< Owner's uid */
+                        gid_t gid;                                            /**< Owner's gid */
+                } fifo;
+
+                struct {
+                        pid_t _pid;                           /**< Process PID from last cycle */
+                        pid_t _ppid;                   /**< Process parent PID from last cycle */
+                        pid_t pid;                          /**< Process PID from actual cycle */
+                        pid_t ppid;                  /**< Process parent PID from actual cycle */
+                        uid_t uid;                                            /**< Process UID */
+                        uid_t euid;                                 /**< Effective Process UID */
+                        gid_t gid;                                            /**< Process GID */
+                        boolean_t zombie;
+                        int children;
+                        long mem_kbyte;
+                        long total_mem_kbyte;
+                        short mem_percent;                                /**< percentage * 10 */
+                        short total_mem_percent;                          /**< percentage * 10 */
+                        short cpu_percent;                                /**< percentage * 10 */
+                        short total_cpu_percent;                          /**< percentage * 10 */
                         time_t uptime;                                     /**< Process uptime */
                 } process;
 
                 struct {
-                        NetStatistics_T stats;
+                        Link_T stats;
                 } net;
         } priv;
 } *Info_T;
 
 
 /** Defines service data */
+//FIXME: use union for type-specific rules
 typedef struct myservice {
 
         /** Common parameters */
         char *name;                                  /**< Service descriptive name */
-        int (*check)(struct myservice *);       /**< Service verification function */
-        int  type;                                     /**< Monitored service type */
-        int  monitor;                                      /**< Monitor state flag */
-        int  mode;                            /**< Monitoring mode for the service */
+        boolean_t (*check)(struct myservice *); /**< Service verification function */
+        boolean_t visited;      /**< Service visited flag, set if dependencies are used */
+        boolean_t depend_visited;/**< Depend visited flag, set if dependencies are used */
+        Service_Type type;                             /**< Monitored service type */
+        Monitor_State monitor;                             /**< Monitor state flag */
+        Monitor_Mode mode;                    /**< Monitoring mode for the service */
+        Action_Type doaction;                 /**< Action scheduled by http thread */
         int  ncycle;                          /**< The number of the current cycle */
         int  nstart;           /**< The number of current starts with this service */
-        int  visited;      /**< Service visited flag, set if dependencies are used */
-        int  depend_visited;/**< Depend visited flag, set if dependencies are used */
         Every_T every;              /**< Timespec for when to run check of service */
         command_t start;                    /**< The start command for the service */
         command_t stop;                      /**< The stop command for the service */
@@ -842,7 +963,8 @@ typedef struct myservice {
         Filesystem_T filesystemlist;                    /**< Filesystem check list */
         Icmp_T      icmplist;                                 /**< ICMP check list */
         Perm_T      perm;                                    /**< Permission check */
-        Port_T      portlist; /**< Portnumbers to check, either local or at a host */
+        Port_T      portlist;                            /**< Portnumbers to check */
+        Port_T      socketlist;                         /**< Unix sockets to check */
         Resource_T  resourcelist;                          /**< Resouce check list */
         Size_T      sizelist;                                 /**< Size check list */
         Uptime_T    uptimelist;                             /**< Uptime check list */
@@ -852,24 +974,23 @@ typedef struct myservice {
         Pid_T       pidlist;                                   /**< Pid check list */
         Pid_T       ppidlist;                                 /**< PPid check list */
         Status_T    statuslist;           /**< Program execution status check list */
+        Fsflag_T    fsflaglist;           /**< Action upon filesystem flags change */
+        Nonexist_T  nonexistlist;  /**< Action upon test subject existence failure */
         Uid_T       uid;                                            /**< Uid check */
         Uid_T       euid;                                 /**< Effective Uid check */
         Gid_T       gid;                                            /**< Gid check */
-        NetLinkStatus_T netlinkstatuslist;           /**< Network link status list */
-        NetLinkSpeed_T netlinkspeedlist;              /**< Network link speed list */
-        NetLinkSaturation_T netlinksaturationlist;  /**< Net. link saturation list */
+        LinkStatus_T linkstatuslist;                 /**< Network link status list */
+        LinkSpeed_T linkspeedlist;                    /**< Network link speed list */
+        LinkSaturation_T linksaturationlist;     /**< Network link saturation list */
         Bandwidth_T uploadbyteslist;                  /**< Upload bytes check list */
         Bandwidth_T uploadpacketslist;              /**< Upload packets check list */
         Bandwidth_T downloadbyteslist;              /**< Download bytes check list */
         Bandwidth_T downloadpacketslist;          /**< Download packets check list */
 
-        EventAction_T action_FSFLAG;      /**< Action upon filesystem flags change */
-
         /** General event handlers */
         EventAction_T action_DATA;       /**< Description of the action upon event */
         EventAction_T action_EXEC;       /**< Description of the action upon event */
         EventAction_T action_INVALID;    /**< Description of the action upon event */
-        EventAction_T action_NONEXIST;   /**< Description of the action upon event */
 
         /** Internal monit events */
         EventAction_T action_MONIT_START;         /**< Monit instance start action */
@@ -882,34 +1003,32 @@ typedef struct myservice {
         int                error_hint;   /**< Failed/Changed hint for error bitmap */
         Info_T             inf;                          /**< Service check result */
         struct timeval     collected;                /**< When were data collected */
-        int                doaction;          /**< Action scheduled by http thread */
         char              *token;                                /**< Action token */
 
         /** Events */
         struct myevent {
-                #define           EVENT_VERSION  3      /**< The event structure version */
+                #define           EVENT_VERSION  4      /**< The event structure version */
                 long              id;                      /**< The event identification */
                 struct timeval    collected;                 /**< When the event occured */
                 char             *source;                 /**< Event source service name */
-                int               mode;             /**< Monitoring mode for the service */
-                int               type;                      /**< Monitored service type */
-                short             state;         /**< TRUE if failed, FALSE if succeeded */
-                short             state_changed;              /**< TRUE if state changed */
+                Monitor_Mode      mode;             /**< Monitoring mode for the service */
+                Service_Type      type;                      /**< Monitored service type */
+                State_Type        state;                                 /**< Test state */
+                boolean_t         state_changed;              /**< true if state changed */
+                Handler_Type      flag;                     /**< The handlers state flag */
                 long long         state_map;           /**< Event bitmap for last cycles */
                 unsigned int      count;                             /**< The event rate */
-                unsigned int      flag;                     /**< The handlers state flag */
                 char             *message;    /**< Optional message describing the event */
                 EventAction_T     action;           /**< Description of the event action */
                 /** For internal use */
                 struct myevent   *next;                         /**< next event in chain */
-                struct myevent   *previous;                 /**< previous event in chain */
         } *eventlist;                                     /**< Pending events list */
 
         /** Context specific parameters */
         char *path;  /**< Path to the filesys, file, directory or process pid file */
 
         /** For internal use */
-        pthread_mutex_t   mutex;        /**< Mutex used for action synchronization */
+        Mutex_T mutex;                  /**< Mutex used for action synchronization */
         struct myservice *next;                         /**< next service in chain */
         struct myservice *next_conf;      /**< next service according to conf file */
         struct myservice *next_depend;           /**< next depend service in chain */
@@ -921,44 +1040,59 @@ typedef struct myevent *Event_T;
 
 /** Defines data for application runtime */
 struct myrun {
-        volatile int  stopped;/**< TRUE if monit was stopped. Flag used by threads */
+        //FIXME: create enum for Run flags and replace set of various boolean_t single-purpose flags with common flags where possible
+        char debug;                                               /**< Debug level */
+        boolean_t once;                                  /**< true - run only once */
+        boolean_t init;              /**< true - don't background to run from init */
+        boolean_t isdaemon;            /**< true if program should run as a daemon */
+        boolean_t use_syslog;                     /**< If true write log to syslog */
+        boolean_t dolog;  /**< true if program should log actions, otherwise false */
+        boolean_t fipsEnabled;          /** true if monit should use FIPS-140 mode */
+        boolean_t handler_init;             /**< The handlers queue initialization */
+        boolean_t doprocess;            /**< true if process status engine is used */
+        boolean_t doaction;        /**< true if some service(s) has action pending */
+        boolean_t dommonitcredentials; /**< true if M/Monit should receive credentials */
+        volatile boolean_t stopped; /**< true if monit was stopped. Flag used by threads */
+        volatile boolean_t doreload; /**< true if a monit daemon should reinitialize */
+        volatile boolean_t dowakeup; /**< true if a monit daemon was wake up by signal */
+        Handler_Type handler_flag;                    /**< The handlers state flag */
+        //FIXME: move files to sub-struct
         char *controlfile;                /**< The file to read configuration from */
         char *logfile;                         /**< The file to write logdata into */
         char *pidfile;                                  /**< This programs pidfile */
         char *idfile;                           /**< The file with unique monit id */
-        char id[STRLEN];                                      /**< Unique monit id */
         char *statefile;                /**< The file with the saved runtime state */
         char *mygroup;                              /**< Group Name of the Service */
-        int  debug;                   /**< Write debug information - TRUE or FALSE */
-        int  use_syslog;                          /**< If TRUE write log to syslog */
-        int  dolog;       /**< TRUE if program should log actions, otherwise FALSE */
-        int  isdaemon;                 /**< TRUE if program should run as a daemon */
+        MD_T id;                                              /**< Unique monit id */
         int  polltime;        /**< In deamon mode, the sleeptime (sec) between run */
         int  startdelay;                    /**< the sleeptime (sec) after startup */
-        int  dohttpd;                    /**< TRUE if Monit HTTP server should run */
-        int  httpdssl;                     /**< TRUE if Monit HTTP server uses ssl */
-        char *httpsslpem;                       /**< PEM file for the HTTPS server */
-        int  clientssl;   /**< TRUE if Monit HTTP server uses ssl with client auth */
-        char *httpsslclientpem;      /**< PEM file/dir to check against at connect */
-        int  allowselfcert;   /**< TRUE if self certified client certs are allowed */
-        int  httpdsig;   /**< TRUE if Monit HTTP server presents version signature */
-        int  httpdport;                    /**< The monit http server's portnumber */
-        int  once;                                       /**< TRUE - run only once */
-        int  init;                   /**< TRUE - don't background to run from init */
         int  facility;              /** The facility to use when running openlog() */
-        int  doprocess;                 /**< TRUE if process status engine is used */
-        char *bind_addr;                  /**< The address monit http will bind to */
-        volatile int  doreload;    /**< TRUE if a monit daemon should reinitialize */
-        volatile int  dowakeup;  /**< TRUE if a monit daemon was wake up by signal */
-        int  doaction;             /**< TRUE if some service(s) has action pending */
-        time_t incarnation;              /**< Unique ID for running monit instance */
-        int  handler_init;                  /**< The handlers queue initialization */
-        int  handler_flag;                            /**< The handlers state flag */
-        int  handler_queue[HANDLER_MAX+1];         /**< The handlers queue counter */
-        Service_T system;                          /**< The general system service */
-        char *eventlist_dir;                   /**< The event queue base directory */
         int  eventlist_slots;          /**< The event queue size - number of slots */
         int  expectbuffer; /**< Generic protocol expect buffer - STRLEN by default */
+        int mailserver_timeout; /**< Connect and read timeout ms for a SMTP server */
+        time_t incarnation;              /**< Unique ID for running monit instance */
+        int  handler_queue[Handler_Max + 1];       /**< The handlers queue counter */
+        Service_T system;                          /**< The general system service */
+        char *eventlist_dir;                   /**< The event queue base directory */
+
+        /** An object holding Monit HTTP interface setup */
+        struct {
+                Httpd_Flags flags;
+                union {
+                        struct {
+                                int  port;
+                                char *address;
+                                struct {
+                                        char *pem;
+                                        char *clientpem;
+                                } ssl;
+                        } net;
+                        struct {
+                                char *path;
+                        } unix;
+                } socket;
+                Auth_T credentials;
+        } httpd;
 
         /** An object holding program relevant "environment" data, see: env.c */
         struct myenvironment {
@@ -968,12 +1102,9 @@ struct myrun {
         } Env;
 
         char *mail_hostname;    /**< Used in HELO/EHLO/MessageID when sending mail */
-        int mailserver_timeout; /**< Connect and read timeout ms for a SMTP server */
         Mail_T maillist;                /**< Global alert notification mailinglist */
         MailServer_T mailservers;    /**< List of MTAs used for alert notification */
         Mmonit_T mmonits;        /**< Event notification and status receivers list */
-        Auth_T credentials;    /** A list holding Basic Authentication information */
-        int dommonitcredentials;   /**< TRUE if M/Monit should receive credentials */
         Auth_T mmonitcredentials;     /**< Pointer to selected credentials or NULL */
         Event_T eventlist;              /** A list holding partialy handled events */
         /** User selected standard mail format */
@@ -984,10 +1115,7 @@ struct myrun {
                 char *message;                            /**< The standard mail message */
         } MailFormat;
 
-        pthread_mutex_t mutex;    /**< Mutex used for service data synchronization */
-#ifdef OPENSSL_FIPS
-        int fipsEnabled;                /** TRUE if monit should use FIPS-140 mode */
-#endif
+        Mutex_T mutex;            /**< Mutex used for service data synchronization */
 };
 
 
@@ -1026,15 +1154,15 @@ extern char *sslnames[];
 
 /* FIXME: move remaining prototypes into seperate header-files */
 
-int   parse(char *);
-int   control_service(const char *, int);
-int   control_service_string(const char *, const char *);
-int   control_service_daemon(const char *, const char *);
+boolean_t parse(char *);
+boolean_t control_service(const char *, Action_Type);
+boolean_t control_service_string(const char *, const char *);
+boolean_t control_service_daemon(const char *, const char *);
 void  setup_dependants();
 void  reset_depend();
 void  spawn(Service_T, command_t, Event_T);
-int   status(char *);
-int   log_init();
+boolean_t status(char *);
+boolean_t log_init();
 void  LogEmergency(const char *, ...) __attribute__((format (printf, 1, 2)));
 void  LogAlert(const char *, ...) __attribute__((format (printf, 1, 2)));
 void  LogCritical(const char *, ...) __attribute__((format (printf, 1, 2)));
@@ -1057,35 +1185,35 @@ void  gc();
 void  gc_mail_list(Mail_T *);
 void  gccmd(command_t *);
 void  gc_event(Event_T *e);
-int   kill_daemon(int);
+boolean_t kill_daemon(int);
 int   exist_daemon();
-int   sendmail(Mail_T);
+boolean_t sendmail(Mail_T);
 int   sock_msg(int, char *, ...) __attribute__((format (printf, 2, 3)));
 void  init_env();
-void  monit_http(int);
-int   can_http();
+void  monit_http(Httpd_Action);
+boolean_t can_http();
 char *format(const char *, va_list, long *);
 void  redirect_stdfd();
 void  fd_close();
 pid_t getpgid(pid_t);
 void unset_signal_block(sigset_t *);
 void set_signal_block(sigset_t *, sigset_t *);
-int  check_process(Service_T);
-int  check_filesystem(Service_T);
-int  check_file(Service_T);
-int  check_directory(Service_T);
-int  check_remote_host(Service_T);
-int  check_system(Service_T);
-int  check_fifo(Service_T);
-int  check_program(Service_T);
-int  check_net(Service_T);
+boolean_t check_process(Service_T);
+boolean_t check_filesystem(Service_T);
+boolean_t check_file(Service_T);
+boolean_t check_directory(Service_T);
+boolean_t check_remote_host(Service_T);
+boolean_t check_system(Service_T);
+boolean_t check_fifo(Service_T);
+boolean_t check_program(Service_T);
+boolean_t check_net(Service_T);
 int  check_URL(Service_T s);
 int  sha_md5_stream (FILE *, void *, void *);
 void reset_procinfo(Service_T);
 int  check_service_status(Service_T);
 void printhash(char *);
-void status_xml(StringBuffer_T, Event_T, short, int, const char *);
-int  handle_mmonit(Event_T);
-int  do_wakeupcall();
+void status_xml(StringBuffer_T, Event_T, Level_Type, int, const char *);
+Handler_Type handle_mmonit(Event_T);
+boolean_t  do_wakeupcall();
 
 #endif

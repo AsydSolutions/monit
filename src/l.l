@@ -61,45 +61,45 @@
 
 #define MAX_STACK_DEPTH 512
 
-  int buffer_stack_ptr = 0;
+int buffer_stack_ptr = 0;
 
-  struct buffer_stack_s {
-    int             lineno;
-    char           *currentfile;
-    YY_BUFFER_STATE buffer;
-  } buffer_stack[MAX_STACK_DEPTH];
+struct buffer_stack_s {
+        int             lineno;
+        char           *currentfile;
+        YY_BUFFER_STATE buffer;
+} buffer_stack[MAX_STACK_DEPTH];
 
 
-  int lineno = 1;
-  int arglineno = 1;
-  char *currentfile=NULL;
-  char *argcurrentfile=NULL;
-  char *argyytext=NULL;
-  typedef enum {
-          Proc_State,
-          File_State,
-          FileSys_State,
-          Dir_State,
-          Host_State,
-          System_State,
-          Fifo_State,
-          Program_State,
-          Net_State,
-          None_State
-  } Check_State;
+int lineno = 1;
+int arglineno = 1;
+char *currentfile = NULL;
+char *argcurrentfile = NULL;
+char *argyytext = NULL;
+typedef enum {
+        Proc_State,
+        File_State,
+        FileSys_State,
+        Dir_State,
+        Host_State,
+        System_State,
+        Fifo_State,
+        Program_State,
+        Net_State,
+        None_State
+} __attribute__((__packed__)) Check_State;
 
-  static Check_State check_state = None_State;
+static Check_State check_state = None_State;
 
-  /* Prototypes */
-  extern void yyerror(const char*,...);
-  extern void yywarning(const char *,...);
-  static void steplinenobycr(char *);
-  static void save_arg(void);
-  static void include_file(char *);
-  static char *handle_quoted_string(char *);
-  static void push_buffer_state(YY_BUFFER_STATE, char*);
-  static int  pop_buffer_state(void);
-  static URL_T create_URL(char *proto);
+/* Prototypes */
+extern void yyerror(const char*,...);
+extern void yywarning(const char *,...);
+static void steplinenobycr(char *);
+static void save_arg(void);
+static void include_file(char *);
+static char *handle_quoted_string(char *);
+static void push_buffer_state(YY_BUFFER_STATE, char*);
+static int  pop_buffer_state(void);
+static URL_T create_URL(char *proto);
 
 %}
 
@@ -477,12 +477,14 @@ group[ \t]+       {
 
 {number}          {
                     yylval.number = atoi(yytext);
-                    save_arg(); return NUMBER;
+                    save_arg();
+                    return NUMBER;
                   }
 
 {real}            {
                     yylval.real = atof(yytext);
-                    save_arg(); return REAL;
+                    save_arg();
+                    return REAL;
                   }
 
 {percent}         {
@@ -491,74 +493,87 @@ group[ \t]+       {
 
 [a-zA-Z0-9]{str}  {
                     yylval.string = Str_dup(yytext);
-                    save_arg(); return STRING;
+                    save_arg();
+                    return STRING;
                   }
 
 \"[/][^\"\n]*\"   {
                     yylval.string = handle_quoted_string(yytext);
-                    save_arg(); return PATH;
+                    save_arg();
+                    return PATH;
                   }
 
 \'[/][^\'\n]*\'   {
                     yylval.string = handle_quoted_string(yytext);
-                    save_arg(); return PATH;
+                    save_arg();
+                    return PATH;
                   }
 
 \"[^\"]*\"        {
                     steplinenobycr(yytext);
                     yylval.string = handle_quoted_string(yytext);
-                    save_arg(); return STRING;
+                    save_arg();
+                    return STRING;
                   }
 
 \'[^\']*\'        {
                     steplinenobycr(yytext);
                     yylval.string = handle_quoted_string(yytext);
-                    save_arg(); return STRING;
+                    save_arg();
+                    return STRING;
                   }
 
 {str}[@]{str}     {
                     yylval.string = Str_dup(yytext);
-                    save_arg(); return MAILADDR;
+                    save_arg();
+                    return MAILADDR;
                   }
 
 [/]{str}          {
                      yylval.string = Str_dup(yytext);
-                     save_arg(); return PATH;
+                     save_arg();
+                    return PATH;
                   }
 
 "/"               {
                      yylval.string = Str_dup(yytext);
-                     save_arg(); return PATH;
+                     save_arg();
+                    return PATH;
                   }
 
 "from:"[ \t]*{str}[@]{str} {
                       char *p = yytext+strlen("from:");
                       yylval.string = Str_trim(Str_dup(p));
-                      save_arg(); return MAILFROM;
+                      save_arg();
+                      return MAILFROM;
                   }
 
 "reply-to:"[ \t]*{str}[@]{str} {
                       char *p = yytext+strlen("reply-to:");
                       yylval.string = Str_trim(Str_dup(p));
-                      save_arg(); return MAILREPLYTO;
+                      save_arg();
+                      return MAILREPLYTO;
                   }
 
 "subject:"[^}\n]* {
                       char *p = yytext+strlen("subject:");
                       yylval.string = Str_trim(Str_dup(p));
-                      save_arg(); return MAILSUBJECT;
+                      save_arg();
+                      return MAILSUBJECT;
                   }
 
 "message:"[^}]*   {
                       char *p = yytext+strlen("message:");
                       steplinenobycr(yytext);
                       yylval.string = Str_trim(Str_dup(p));
-                      save_arg(); return MAILBODY;
+                      save_arg();
+                      return MAILBODY;
                   }
 
 {hostname}        {
                       yylval.string = Str_dup(yytext);
-                      save_arg(); return STRING;
+                      save_arg();
+                      return STRING;
                   }
 
 [\"\']            {
@@ -576,19 +591,22 @@ group[ \t]+       {
   {str}           {
                     yylval.string = Str_dup(yytext);
                     BEGIN(INITIAL);
-                    save_arg(); return SERVICENAME;
+                    save_arg();
+                    return SERVICENAME;
                   }
 
   \"{str}\"       {
                     yylval.string = handle_quoted_string(yytext);
                     BEGIN(INITIAL);
-                    save_arg(); return SERVICENAME;
+                    save_arg();
+                    return SERVICENAME;
                   }
 
   \'{str}\'       {
                     yylval.string = handle_quoted_string(yytext);
                     BEGIN(INITIAL);
-                    save_arg(); return SERVICENAME;
+                    save_arg();
+                    return SERVICENAME;
                   }
 
   [\"\']          {
@@ -607,7 +625,8 @@ group[ \t]+       {
 
   {str}           {
                     yylval.string = Str_dup(yytext);
-                    save_arg(); return SERVICENAME;
+                    save_arg();
+                    return SERVICENAME;
                   }
 
   [ \r\n\t]+[^,]  {
@@ -633,7 +652,8 @@ group[ \t]+       {
   \'[^\']*\'      {
                       steplinenobycr(yytext);
                       yylval.string = handle_quoted_string(yytext);
-                      save_arg(); return STRING;
+                      save_arg();
+                      return STRING;
                   }
 
   \'              {
@@ -642,7 +662,8 @@ group[ \t]+       {
 
   [^ \t\n\"]+     {
                       yylval.string = Str_dup(yytext);
-                      save_arg(); return STRING;
+                      save_arg();
+                      return STRING;
                   }
 
 }
@@ -651,19 +672,20 @@ group[ \t]+       {
 
   {ws}|[\n]       {
                       BEGIN(INITIAL);
-                      if(!yylval.url->hostname)
-                        yyerror("missing hostname in URL");
-                      if(!yylval.url->path)
-                        yylval.url->path = Str_dup("/");
-                      yylval.url->url = Str_cat("%s://%s:%d%s%s%s",
-                        yylval.url->protocol,
-                        /* possible credentials are hidden */
-                        yylval.url->hostname,
-                        yylval.url->port,
-                        yylval.url->path,
-                        yylval.url->query?"?":"",
-                        yylval.url->query?yylval.url->query:"");
-                      save_arg(); return URLOBJECT;
+                      if (! yylval.url->hostname)
+                                yyerror("missing hostname in URL");
+                      if (! yylval.url->path)
+                                yylval.url->path = Str_dup("/");
+                      yylval.url->url = Str_cat("%s://[%s]:%d%s%s%s",
+                                yylval.url->protocol,
+                                /* possible credentials are hidden */
+                                yylval.url->hostname,
+                                yylval.url->port,
+                                yylval.url->path,
+                                yylval.url->query ? "?" : "",
+                                yylval.url->query ? yylval.url->query : "");
+                      save_arg();
+                      return URLOBJECT;
                   }
 
   [^:@ ]+/[:][^@: ]+[@] {
@@ -675,8 +697,12 @@ group[ \t]+       {
                       yylval.url->password = Str_ndup(yytext, strlen(yytext)-1);
                   }
 
-  [^/?:#\r\n ]+   {
+  ([a-zA-Z0-9\-]+)([.]([a-zA-Z0-9\-]+))* {
                       yylval.url->hostname = Str_dup(yytext);
+                  }
+
+  \[[0-9a-zA-Z:%]+\] {
+                      yylval.url->hostname = Str_ndup(yytext + 1, yyleng - 2);
                   }
 
   [:]{number}     {
@@ -702,19 +728,22 @@ group[ \t]+       {
   {str}           {
                     yylval.string = Str_dup(yytext);
                     BEGIN(INITIAL);
-                    save_arg(); return STRINGNAME;
+                    save_arg();
+                    return STRINGNAME;
                   }
 
   \"{str}\"       {
                     yylval.string = handle_quoted_string(yytext);
                     BEGIN(INITIAL);
-                    save_arg(); return STRINGNAME;
+                    save_arg();
+                    return STRINGNAME;
                   }
 
   \'{str}\'       {
                     yylval.string = handle_quoted_string(yytext);
                     BEGIN(INITIAL);
-                    save_arg(); return STRINGNAME;
+                    save_arg();
+                    return STRINGNAME;
                   }
 
   [\"\']          {
@@ -730,13 +759,15 @@ group[ \t]+       {
   {number}        {
                     yylval.number = atoi(yytext);
                     BEGIN(INITIAL);
-                    save_arg(); return NUMBER;
+                    save_arg();
+                    return NUMBER;
                   }
 
   ['"]{ws}?[0-9,*-]+{ws}[0-9,*-]+{ws}[0-9,*-]+{ws}[0-9,*-]+{ws}[0-9,*-]+{ws}?['"] { // A minimal syntax check of the cron format string; 5 fields separated with white-space
                     yylval.string = Str_dup(Str_unquote(yytext));
                     BEGIN(INITIAL);
-                    save_arg(); return TIMESPEC;
+                    save_arg();
+                    return TIMESPEC;
                   }
 
   .               {
@@ -747,36 +778,36 @@ group[ \t]+       {
 }
 
 <HTTP_HEADER_COND>{
-        
+
         {wws}   ;
-        
+
         "["     ;
 
         [\n]    {
                         lineno++;
                 }
-        
+
         ([^\t\r\n,\[\]:]+)/[:] { // name/:
                         save_arg();
                 }
-        
+
         [:](({ws}?["][^"]+["])|([^\r\n\],:]+)) { // : value
                         yylval.string = Str_cat("%s:%s", Str_trim(argyytext), Str_unquote(yytext + 1));
                         save_arg();
                         return HTTPHEADER;
                 }
-        
+
         "]"     {
                         BEGIN(INITIAL);
                         save_arg();
                         return ']';
                 }
-        
+
         .       {
                         BEGIN(INITIAL);
                         yyerror("invalid HTTP header list format");
                 }
-        
+
 }
 
 
@@ -789,7 +820,7 @@ group[ \t]+       {
 <INCLUDE>[ \t]*      /* eat the whitespace */
 
 <INCLUDE>\"[^\"\r\n]+\" { /* got the include file name with double quotes */
-                     char *temp=Str_dup(yytext);
+                     char *temp = Str_dup(yytext);
                      Str_unquote(temp);
                      include_file(temp);
                      FREE(temp);
@@ -797,7 +828,7 @@ group[ \t]+       {
                    }
 
 <INCLUDE>\'[^\'\r\n]+\' { /* got the include file name with single quotes*/
-                     char *temp=Str_dup(yytext);
+                     char *temp = Str_dup(yytext);
                      Str_unquote(temp);
                      include_file(temp);
                      FREE(temp);
@@ -805,7 +836,7 @@ group[ \t]+       {
                    }
 
 <INCLUDE>[^ \t\r\n]+ { /* got the include file name without quotes*/
-                     char *temp=Str_dup(yytext);
+                     char *temp = Str_dup(yytext);
                      include_file(temp);
                      FREE(temp);
                      BEGIN(INITIAL);
@@ -814,7 +845,7 @@ group[ \t]+       {
 
 <<EOF>>           {
 
-                       if ( !pop_buffer_state() )
+                       if ( ! pop_buffer_state() )
                        {
                          yyterminate();
                        } else {
@@ -831,119 +862,119 @@ group[ \t]+       {
 
 static void steplinenobycr(char *string) {
 
-  char *pos = string;
+        char *pos = string;
 
-  while(*pos)
-    if('\n'==*pos++) {
-      lineno++;
-    }
+        while (*pos)
+        if ('\n' == *pos++) {
+                lineno++;
+        }
 
 }
 
 
 static char *handle_quoted_string(char *string) {
-  char *buf = Str_dup(string);
-  Str_unquote(buf);
-  Util_handleEscapes(buf);
-  return buf;
+        char *buf = Str_dup(string);
+        Str_unquote(buf);
+        Util_handleEscapes(buf);
+        return buf;
 }
 
 
 static void include_file(char *pattern) {
-  glob_t globbuf;
-  int i;
+        glob_t globbuf;
+        int i;
 
-  if (glob(pattern,  GLOB_MARK, NULL, &globbuf) != 0)
-    return; // no include files found
+        if (glob(pattern,  GLOB_MARK, NULL, &globbuf) != 0)
+        return; // no include files found
 
-  for (i = 0; i < globbuf.gl_pathc; i++) {
-    FILE *yyin;
-    size_t filename_length = strlen(globbuf.gl_pathv[i]);
+        for (i = 0; i < globbuf.gl_pathc; i++) {
+                FILE *yyin;
+                size_t filename_length = strlen(globbuf.gl_pathv[i]);
 
-    /* check whenever we have caught a directory or file backup copy */
-    if ((filename_length == 0) || (globbuf.gl_pathv[i][filename_length-1] == '~' ) || (globbuf.gl_pathv[i][filename_length-1] == '/' ))
-      continue;
+                /* check whenever we have caught a directory or file backup copy */
+                if ((filename_length == 0) || (globbuf.gl_pathv[i][filename_length-1] == '~' ) || (globbuf.gl_pathv[i][filename_length-1] == '/' ))
+                continue;
 
-    yyin = fopen( globbuf.gl_pathv[i], "r" );
+                yyin = fopen( globbuf.gl_pathv[i], "r" );
 
-    if (! yyin)
-      yyerror( "failed to include file" );
-    else
-      push_buffer_state(yy_create_buffer( yyin, YY_BUF_SIZE ), globbuf.gl_pathv[i]);
-  }
-  globfree(&globbuf);
+                if (! yyin)
+                yyerror( "failed to include file" );
+                else
+                push_buffer_state(yy_create_buffer( yyin, YY_BUF_SIZE ), globbuf.gl_pathv[i]);
+        }
+        globfree(&globbuf);
 }
 
 
 static void push_buffer_state(YY_BUFFER_STATE buffer, char *filename) {
-  if ( buffer_stack_ptr >= MAX_STACK_DEPTH ) {
-    yyerror("include files limit reached");
-    exit( 1 );
-  }
+        if ( buffer_stack_ptr >= MAX_STACK_DEPTH ) {
+                yyerror("include files limit reached");
+                exit( 1 );
+        }
 
-  buffer_stack[buffer_stack_ptr].lineno = lineno;
-  buffer_stack[buffer_stack_ptr].currentfile = currentfile;
-  buffer_stack[buffer_stack_ptr].buffer = YY_CURRENT_BUFFER;
+        buffer_stack[buffer_stack_ptr].lineno = lineno;
+        buffer_stack[buffer_stack_ptr].currentfile = currentfile;
+        buffer_stack[buffer_stack_ptr].buffer = YY_CURRENT_BUFFER;
 
-  buffer_stack_ptr++;
+        buffer_stack_ptr++;
 
-  lineno = 1;
-  currentfile = Str_dup(filename);
+        lineno = 1;
+        currentfile = Str_dup(filename);
 
-  yy_switch_to_buffer(buffer);
+        yy_switch_to_buffer(buffer);
 
-  BEGIN(INITIAL);
+        BEGIN(INITIAL);
 
 }
 
 
 static int pop_buffer_state(void) {
 
-  if ( --buffer_stack_ptr < 0 ) {
+        if ( --buffer_stack_ptr < 0 ) {
 
-    return 0;
+                return 0;
 
-  } else {
+        } else {
 
-    fclose(yyin);
-    lineno=buffer_stack[buffer_stack_ptr].lineno;
+                fclose(yyin);
+                lineno = buffer_stack[buffer_stack_ptr].lineno;
 
-    FREE(currentfile);
-    currentfile=buffer_stack[buffer_stack_ptr].currentfile;
+                FREE(currentfile);
+                currentfile = buffer_stack[buffer_stack_ptr].currentfile;
 
-    yy_delete_buffer( YY_CURRENT_BUFFER );
-    yy_switch_to_buffer( buffer_stack[buffer_stack_ptr].buffer );
+                yy_delete_buffer( YY_CURRENT_BUFFER );
+                yy_switch_to_buffer( buffer_stack[buffer_stack_ptr].buffer );
 
-  }
+        }
 
-  return 1;
+        return 1;
 
 }
 
 
 static void save_arg(void) {
-
-  arglineno=lineno;
-  argcurrentfile=currentfile;
-  FREE(argyytext);
-  argyytext=Str_dup(yytext);
-
+        arglineno = lineno;
+        argcurrentfile = currentfile;
+        FREE(argyytext);
+        argyytext = Str_dup(yytext);
 }
 
 
 static URL_T create_URL(char *proto) {
-  URL_T url;
-  ASSERT(proto);
-  NEW(url);
-  url->protocol = proto;
-  if(IS(url->protocol, "https")) {
-    url->port = 443;
-    if(!have_ssl())
-      yyerror("HTTPS protocol not supported -- SSL support disabled" );
-  } else if(IS(url->protocol, "http")) {
-    url->port = 80;
-  } else {
-    yyerror("URL protocol not supported -- ");
-  }
-  return url;
+        URL_T url;
+        ASSERT(proto);
+        NEW(url);
+        url->protocol = proto;
+        if (IS(url->protocol, "https")) {
+                url->port = 443;
+#ifndef HAVE_OPENSSL
+                yyerror("HTTPS protocol not supported -- SSL support disabled" );
+#endif
+        } else if (IS(url->protocol, "http")) {
+                url->port = 80;
+        } else {
+                yyerror("URL protocol not supported -- ");
+        }
+        return url;
 }
+

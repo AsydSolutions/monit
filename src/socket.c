@@ -60,10 +60,14 @@
 #include <netinet/tcp.h>
 #endif
 
+#ifdef HAVE_NETDB_H
+#include <netdb.h>
+#endif
+
 #include "net.h"
-#include "ssl.h"
 #include "monit.h"
 #include "socket.h"
+#include "SslServer.h"
 
 // libmonit
 #include "exceptions/assert.h"
@@ -82,23 +86,31 @@
 /* ------------------------------------------------------------- Definitions */
 
 
-#define TYPE_LOCAL   0
-#define TYPE_ACCEPT  1
+typedef enum {
+        Connection_Client = 0,
+        Connection_Server
+} __attribute__((__packed__)) Connection_Type;
+
+
 // One TCP frame data size
-#define RBUFFER_SIZE 1500
+#define RBUFFER_SIZE 1460
+
 
 struct Socket_T {
+        int socket;
         int port;
         int type;
-        int socket;
-        char *host;
-        Port_T Port;
         int timeout; // milliseconds
-        int connection_type;
-        ssl_connection *ssl;
-        ssl_server_connection *sslserver;
         int length;
         int offset;
+        Socket_Family family;
+        Connection_Type connection_type;
+        char *host;
+        Port_T Port;
+#ifdef HAVE_OPENSSL
+        Ssl_T ssl;
+        SslServer_T sslserver;
+#endif
         unsigned char buffer[RBUFFER_SIZE + 1];
 };
 
@@ -111,24 +123,25 @@ struct Socket_T {
  * operation timed out -1 is returned.
  * @param S A Socket object
  * @param timeout The number of milliseconds to wait for data to be read
- * @return TRUE (the length of data read) or -1 if an error occured
+ * @return the length of data read or -1 if an error occured
  */
 static int fill(Socket_T S, int timeout) {
-        int n;
         S->offset = 0;
         S->length = 0;
         if (S->type == SOCK_DGRAM)
                 timeout = 500;
-        if (S->ssl) {
-                n = recv_ssl_socket(S->ssl, S->buffer + S->length, RBUFFER_SIZE-S->length, timeout);
-        } else {
-                n = (int)sock_read(S->socket, S->buffer + S->length,  RBUFFER_SIZE-S->length, timeout);
-        }
-        if (n > 0) {
+        int n;
+#ifdef HAVE_OPENSSL
+        if (S->ssl)
+                n = Ssl_read(S->ssl, S->buffer + S->length, RBUFFER_SIZE - S->length, timeout);
+        else
+#endif
+                n = (int)sock_read(S->socket, S->buffer + S->length,  RBUFFER_SIZE - S->length, timeout);
+        if (n > 0)
                 S->length += n;
-        }  else if (n < 0) {
+        else if (n < 0)
                 return -1;
-        } else if (! (errno == EAGAIN || errno == EWOULDBLOCK)) // Peer closed connection
+        else if (! (errno == EAGAIN || errno == EWOULDBLOCK)) // Peer closed connection
                 return -1;
         return n;
 }
@@ -137,72 +150,71 @@ static int fill(Socket_T S, int timeout) {
 /* ------------------------------------------------------------------ Public */
 
 
-Socket_T socket_new(const char *host, int port, int type, int use_ssl, int timeout) {
-        Ssl_T ssl = {.use_ssl = use_ssl, .version = SSL_VERSION_AUTO};
-        return socket_create_t(host, port, type, ssl, timeout);
+Socket_T socket_new(const char *host, int port, int type, Socket_Family family, boolean_t use_ssl, int timeout) {
+        return socket_create_t(host, port, type, family, (SslOptions_T){.use_ssl = use_ssl, .version = SSL_Auto}, timeout);
 }
 
 
 Socket_T socket_create(void *port) {
-        int socket;
-        Socket_T S = NULL;
-        Port_T p = port;
         ASSERT(port);
+        Port_T p = port;
+        int socket = -1;
         switch (p->family) {
-                case AF_UNIX:
+                case Socket_Unix:
                         socket = create_unix_socket(p->pathname, p->type, p->timeout);
                         break;
-                case AF_INET:
-                        socket = create_socket(p->hostname, p->port, p->type, p->timeout);
+                case Socket_Ip:
+                case Socket_Ip4:
+                case Socket_Ip6:
+                        socket = create_socket(p->hostname, p->port, p->type, p->family, p->timeout);
                         break;
                 default:
-                        LogError("Invalid Port Protocol family\n");
+                        LogError("socket_create: Invalid socket family %d\n", p->family);
                         return NULL;
         }
-        if (socket < 0) {
-                LogError("socket_create: Could not create socket -- %s\n", STRERROR);
-        } else {
+        if (socket >= 0) {
+                Socket_T S;
                 NEW(S);
                 S->socket = socket;
                 S->type = p->type;
+                S->family = p->family;
                 S->port = p->port;
                 S->timeout = p->timeout;
-                S->connection_type = TYPE_LOCAL;
-                if (p->family == AF_UNIX) {
-                        S->host = Str_dup(LOCALHOST);
-                } else {
-                        S->host = Str_dup(p->hostname);
-                }
-                if (p->SSL.use_ssl && !socket_switch2ssl(S, p->SSL)) {
+                S->connection_type = Connection_Client;
+                S->host = Str_dup(p->family == Socket_Unix ? LOCALHOST : p->hostname);
+                if (p->SSL.use_ssl && ! socket_switch2ssl(S, p->SSL)) {
                         socket_free(&S);
+                        LogError("socket_create: Could not switch socket to SSL\n");
                         return NULL;
                 }
                 S->Port = port;
+                return S;
         }
-        return S;
+        return NULL;
 }
 
 
-Socket_T socket_create_t(const char *host, int port, int type, Ssl_T ssl, int timeout) {
-        int s;
-        int proto = type == SOCKET_UDP ? SOCK_DGRAM : SOCK_STREAM;
+Socket_T socket_create_t(const char *host, int port, int type, Socket_Family family, SslOptions_T ssl, int timeout) {
         ASSERT(host);
-        ASSERT((type == SOCKET_UDP)||(type == SOCKET_TCP));
-        if (ssl.use_ssl) {
+        ASSERT(timeout > 0);
+        if (ssl.use_ssl)
                 ASSERT(type == SOCKET_TCP);
-        }
-        ASSERT(timeout>0);
+        else
+                ASSERT(type == SOCKET_TCP || type == SOCKET_UDP);
         timeout = timeout * 1000; // Internally milliseconds is used
-        if ((s = create_socket(host, port, proto, timeout)) != -1) {
-                Socket_T S = NULL;
+        int proto = type == SOCKET_UDP ? SOCK_DGRAM : SOCK_STREAM;
+        int s = create_socket(host, port, proto, family, timeout);
+        if (s >= 0) {
+                Socket_T S;
                 NEW(S);
                 S->socket = s;
                 S->port = port;
                 S->type = proto;
+                S->family = family;
                 S->timeout = timeout;
                 S->host = Str_dup(host);
-                S->connection_type = TYPE_LOCAL;
-                if (ssl.use_ssl && !socket_switch2ssl(S, ssl)) {
+                S->connection_type = Connection_Client;
+                if (ssl.use_ssl && ! socket_switch2ssl(S, ssl)) {
                         socket_free(&S);
                         return NULL;
                 }
@@ -212,43 +224,66 @@ Socket_T socket_create_t(const char *host, int port, int type, Ssl_T ssl, int ti
 }
 
 
-Socket_T socket_create_a(int socket, const char *remote_host, int port, void *sslserver) {
-        Socket_T S;
+Socket_T socket_create_u(const char *path, int type, int timeout) {
+        ASSERT(path);
+        ASSERT(timeout > 0);
+        timeout = timeout * 1000; // Internally milliseconds is used
+        int proto = type == SOCKET_UDP ? SOCK_DGRAM : SOCK_STREAM;
+        int s = create_unix_socket(path, proto, timeout);
+        if (s != -1) {
+                Socket_T S;
+                NEW(S);
+                S->socket = s;
+                S->type = proto;
+                S->family = Socket_Unix;
+                S->timeout = timeout;
+                S->connection_type = Connection_Client;
+                return S;
+        }
+        return NULL;
+}
+
+
+Socket_T socket_create_a(int socket, struct sockaddr *addr, void *sslserver) {
         ASSERT(socket >= 0);
-        ASSERT(remote_host);
+        ASSERT(addr);
+        Socket_T S;
         NEW(S);
-        S->port = port;
         S->socket = socket;
-        S->type = SOCK_STREAM;
         S->timeout = NET_TIMEOUT; // milliseconds
-        S->host = Str_dup(remote_host);
-        S->connection_type = TYPE_ACCEPT;
-        if (sslserver) {
-                S->sslserver = sslserver;
-                if (! (S->ssl = insert_accepted_ssl_socket(S->sslserver))) {
-                        goto ssl_error;
+        S->connection_type = Connection_Server;
+        S->type = SOCK_STREAM;
+        if (addr->sa_family == AF_INET) {
+                struct sockaddr_in *a = (struct sockaddr_in *)addr;
+                S->family = Socket_Ip4;
+                S->port = ntohs(a->sin_port);
+                S->host = Str_dup(inet_ntoa(a->sin_addr));
+#ifdef HAVE_OPENSSL
+                if (sslserver) {
+                        S->sslserver = sslserver;
+                        if (! (S->ssl = SslServer_newConnection(S->sslserver)) || ! SslServer_accept(S->ssl, S->socket)) {
+                                socket_free(&S);
+                                return NULL;
+                        }
                 }
-                if (! embed_accepted_ssl_socket(S->ssl, S->socket)) {
-                        goto ssl_error;
-                }
+#endif
+        } else {
+                S->family = Socket_Unix;
         }
         return S;
-ssl_error:
-        socket_free(&S);
-        return NULL;
 }
 
 
 void socket_free(Socket_T *S) {
         ASSERT(S && *S);
 #ifdef HAVE_OPENSSL
-        if ((*S)->ssl && (*S)->ssl->handler)
+        if ((*S)->ssl)
         {
-                if ((*S)->connection_type == TYPE_LOCAL) {
-                        close_ssl_socket((*S)->ssl);
-                        delete_ssl_socket((*S)->ssl);
-                } else if ((*S)->connection_type == TYPE_ACCEPT && (*S)->sslserver) {
-                        close_accepted_ssl_socket((*S)->sslserver, (*S)->ssl);
+                if ((*S)->connection_type == Connection_Client) {
+                        Ssl_close((*S)->ssl);
+                        Ssl_free(&((*S)->ssl));
+                } else if ((*S)->connection_type == Connection_Server && (*S)->sslserver) {
+                        SslServer_freeConnection((*S)->sslserver, &((*S)->ssl));
                 }
         }
         else
@@ -277,9 +312,9 @@ int socket_getTimeout(Socket_T S) {
 }
 
 
-int socket_is_ready(Socket_T S) {
+boolean_t socket_is_ready(Socket_T S) {
         ASSERT(S);
-        switch(S->type) {
+        switch (S->type) {
                 case SOCK_STREAM:
                         return check_socket(S->socket);
                 case SOCK_DGRAM:
@@ -287,17 +322,21 @@ int socket_is_ready(Socket_T S) {
                 default:
                         break;
         }
-        return FALSE;
+        return false;
 }
 
 
-int socket_is_secure(Socket_T S) {
+boolean_t socket_is_secure(Socket_T S) {
         ASSERT(S);
+#ifdef HAVE_OPENSSL
         return (S->ssl != NULL);
+#else
+        return false;
+#endif
 }
 
 
-int socket_is_udp(Socket_T S) {
+boolean_t socket_is_udp(Socket_T S) {
         ASSERT(S);
         return (S->type == SOCK_DGRAM);
 }
@@ -334,24 +373,37 @@ const char *socket_get_remote_host(Socket_T S) {
 
 
 int socket_get_local_port(Socket_T S) {
-        struct sockaddr sock;
-        socklen_t len = sizeof(sock);
         ASSERT(S);
-        if (getsockname (S->socket, &sock, &len ) == 0)
-                return ntohs (((struct sockaddr_in *)&sock)->sin_port);
+        struct sockaddr_storage addr;
+        socklen_t addrlen = sizeof(addr);
+        if (getsockname(S->socket, (struct sockaddr *)&addr, &addrlen) == 0) {
+                if (addr.ss_family == AF_INET)
+                        return ntohs(((struct sockaddr_in *)&addr)->sin_port);
+#ifdef IPV6
+                else if (addr.ss_family == AF_INET6)
+                        return ntohs(((struct sockaddr_in6 *)&addr)->sin6_port);
+#endif
+        }
         return -1;
 
 }
 
 
-const char *socket_get_local_host(Socket_T S) {
-        struct sockaddr sock;
-        socklen_t len = sizeof(sock);
+const char *socket_get_local_host(Socket_T S, char *host, int hostlen) {
         ASSERT(S);
-        if (getsockname(S->socket, &sock, &len) == 0)
-                return inet_ntoa(((struct sockaddr_in *)&sock)->sin_addr);
+        ASSERT(host);
+        ASSERT(hostlen);
+        struct sockaddr_storage addr;
+        socklen_t addrlen = sizeof(addr);
+        if (! getsockname(S->socket, (struct sockaddr *)&addr, &addrlen)) {
+                int status = getnameinfo((struct sockaddr *)&addr, addrlen, host, hostlen, NULL, 0, NI_NUMERICHOST);
+                if (! status)
+                        return host;
+                LogError("Cannot translate address to hostname -- %s\n", status == EAI_SYSTEM ? STRERROR : gai_strerror(status));
+        } else {
+                LogError("Cannot translate address to hostname -- getsockname failed: %s\n", STRERROR);
+        }
         return NULL;
-
 }
 
 
@@ -374,17 +426,13 @@ const char *socket_getError(Socket_T S) {
 /* ---------------------------------------------------------------- Public */
 
 
-int socket_switch2ssl(Socket_T S, Ssl_T ssl)  {
+boolean_t socket_switch2ssl(Socket_T S, SslOptions_T ssl)  {
         assert(S);
-        if (! (S->ssl = new_ssl_connection(ssl.clientpemfile, ssl.version)))
-                return FALSE;
-        if (! embed_ssl_socket(S->ssl, S->socket))
-                return FALSE;
-        if (ssl.certmd5 && !check_ssl_md5sum(S->ssl, ssl.certmd5)) {
-                LogError("md5sum of certificate does not match!\n");
-                return FALSE;
-        }
-        return TRUE;
+#ifdef HAVE_OPENSSL
+        if ((S->ssl = Ssl_new(ssl.clientpemfile, ssl.version)) && Ssl_connect(S->ssl, S->socket) && (! ssl.certmd5 || Ssl_checkCertificate(S->ssl, ssl.certmd5)))
+                return true;
+#endif
+        return false;
 }
 
 
@@ -408,15 +456,20 @@ int socket_write(Socket_T S, void *b, size_t size) {
         void *p = b;
         ASSERT(S);
         while (size > 0) {
+#ifdef HAVE_OPENSSL
                 if (S->ssl) {
-                        n = send_ssl_socket(S->ssl, p, size, S->timeout);
+                        n = Ssl_write(S->ssl, p, (int)size, S->timeout);
                 } else {
+#endif
                         if (S->type == SOCK_DGRAM)
                                 n = udp_write(S->socket,  p, size, S->timeout);
                         else
                                 n = sock_write(S->socket,  p, size, S->timeout);
+#ifdef HAVE_OPENSSL
                 }
-                if (n <= 0) break;
+#endif
+                if (n <= 0)
+                        break;
                 p += n;
                 size -= n;
 
@@ -431,10 +484,9 @@ int socket_write(Socket_T S, void *b, size_t size) {
 
 int socket_read_byte(Socket_T S) {
         ASSERT(S);
-        if (S->offset >= S->length) {
+        if (S->offset >= S->length)
                 if (fill(S, S->timeout) <= 0)
                         return -1;
-        }
         return S->buffer[S->offset++];
 }
 
@@ -443,10 +495,9 @@ int socket_read(Socket_T S, void *b, int size) {
         int c;
         unsigned char *p = b;
         ASSERT(S);
-        while ((size-- > 0) && ((c = socket_read_byte(S)) >= 0)) {
+        while ((size-- > 0) && ((c = socket_read_byte(S)) >= 0))
                 *p++ = c;
-        }
-        return  (int)((long)p - (long)b);
+        return (int)((long)p - (long)b);
 }
 
 
@@ -469,20 +520,15 @@ char *socket_readln(Socket_T S, char *s, int size) {
 void socket_reset(Socket_T S) {
         ASSERT(S);
         /* Throw away any pending incomming data */
-        while (fill(S, 0) > 0);
+        while (fill(S, 0) > 0)
+                ;
         S->offset = 0;
         S->length = 0;
 }
 
 
-int socket_shutdown_write(Socket_T S) {
-        ASSERT(S);
-        return (shutdown(S->socket, 1) == 0);
-}
-
-
-int socket_set_tcp_nodelay(Socket_T S) {
-    int on = 1;
-    return (setsockopt(S->socket, IPPROTO_TCP, TCP_NODELAY, &on, sizeof(on)) == 0);
+boolean_t socket_set_tcp_nodelay(Socket_T S) {
+        int on = 1;
+        return (setsockopt(S->socket, IPPROTO_TCP, TCP_NODELAY, &on, sizeof(on)) == 0);
 }
 

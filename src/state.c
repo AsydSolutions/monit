@@ -125,7 +125,7 @@ typedef struct mystate1 {
         int                ncycle;
         union {
                 struct {
-                        unsigned long long st_ino;
+                        unsigned long long inode;
                         unsigned long long readpos;
                 } file;
         } priv;
@@ -147,10 +147,10 @@ static void update_v0(int services) {
                 if ((service = Util_getService(state.name))) {
                         service->nstart = state.nstart;
                         service->ncycle = state.ncycle;
-                        if (state.monitor == MONITOR_NOT)
+                        if (state.monitor == Monitor_Not)
                                 service->monitor = state.monitor;
-                        else if (service->monitor == MONITOR_NOT)
-                                service->monitor = MONITOR_INIT;
+                        else if (service->monitor == Monitor_Not)
+                                service->monitor = Monitor_Init;
                 }
         }
 }
@@ -163,12 +163,12 @@ static void update_v1() {
                 if ((service = Util_getService(state.name)) && service->type == state.type) {
                         service->nstart = state.nstart;
                         service->ncycle = state.ncycle;
-                        if (state.monitor == MONITOR_NOT)
+                        if (state.monitor == Monitor_Not)
                                 service->monitor = state.monitor;
-                        else if (service->monitor == MONITOR_NOT)
-                                service->monitor = MONITOR_INIT;
-                        if (service->type == TYPE_FILE) {
-                                service->inf->priv.file.st_ino = state.priv.file.st_ino;
+                        else if (service->monitor == Monitor_Not)
+                                service->monitor = Monitor_Init;
+                        if (service->type == Service_File) {
+                                service->inf->priv.file.inode = state.priv.file.inode;
                                 service->inf->priv.file.readpos = state.priv.file.readpos;
                         }
                 }
@@ -179,14 +179,14 @@ static void update_v1() {
 /* ------------------------------------------------------------------ Public */
 
 
-int State_open() {
+boolean_t State_open() {
         State_close();
         if ((file = open(Run.statefile, O_RDWR | O_CREAT, 0600)) == -1) {
                 LogError("Cannot open for write -- %s\n", STRERROR);
-                return FALSE;
+                return false;
         }
         atexit(State_close);
-        return TRUE;
+        return true;
 }
 
 
@@ -219,11 +219,11 @@ void State_save() {
                         memset(&state, 0, sizeof(state));
                         snprintf(state.name, sizeof(state.name), "%s", service->name);
                         state.type = service->type;
-                        state.monitor = service->monitor & ~MONITOR_WAITING;
+                        state.monitor = service->monitor & ~Monitor_Waiting;
                         state.nstart = service->nstart;
                         state.ncycle = service->ncycle;
-                        if (service->type == TYPE_FILE) {
-                                state.priv.file.st_ino = service->inf->priv.file.st_ino;
+                        if (service->type == Service_File) {
+                                state.priv.file.inode = service->inf->priv.file.inode;
                                 state.priv.file.readpos = service->inf->priv.file.readpos;
                         }
                         if (write(file, &state, sizeof(state)) != sizeof(state))
@@ -243,7 +243,7 @@ void State_save() {
 void State_update() {
         /* Ignore empty state file */
         if ((lseek(file, 0L, SEEK_END) == 0))
-             return;
+                return;
         TRY
         {
                 if (lseek(file, 0L, SEEK_SET) == -1)

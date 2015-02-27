@@ -47,17 +47,17 @@
 /**
  * Check if the hostname resolves
  * @param hostname The host to check
- * @return TRUE if hostname resolves, otherwise FALSE
+ * @return true if hostname resolves, otherwise false
  */
-int check_host(const char *hostname);
+boolean_t check_host(const char *hostname);
 
 
 /**
  * Verify that the socket is ready for i|o
  * @param socket A socket
- * @return TRUE if the socket is ready, otherwise FALSE.
+ * @return true if the socket is ready, otherwise false.
  */
-int check_socket(int socket);
+boolean_t check_socket(int socket);
 
 
 /**
@@ -66,9 +66,9 @@ int check_socket(int socket);
  * The test is conducted by sending a datagram to the server and
  * check for a returned ICMP error when reading from the socket.
  * @param socket A socket
- * @return TRUE if the socket is ready, otherwise FALSE.
+ * @return true if the socket is ready, otherwise false.
  */
-int check_udp_socket(int socket);
+boolean_t check_udp_socket(int socket);
 
 
 /**
@@ -77,10 +77,11 @@ int check_udp_socket(int socket);
  * @param hostname The host to open a socket at
  * @param port The port number to connect to
  * @param type Socket type to use (SOCK_STREAM|SOCK_DGRAM)
+ * @param family The socket family to use (see Socket_Family type)
  * @param timeout If not connected within timeout milliseconds abort and return -1
  * @return The socket or -1 if an error occured.
  */
-int create_socket(const char *hostname, int port, int type, int timeout);
+int create_socket(const char *hostname, int port, int type, Socket_Family family, int timeout);
 
 
 /**
@@ -94,38 +95,28 @@ int create_unix_socket(const char *pathname, int type, int timeout);
 
 
 /**
- * Create a blocking server socket and bind it to the specified local
+ * Create a non-blocking server socket and bind it to the specified local
  * port number, with the specified backlog. Set a socket option to
  * make the port reusable again. If a bind address is given the socket
  * will only accept connect requests to this addresses. If the bind
  * address is NULL it will accept connections on any/all local
  * addresses
+ * @param address the local address the server will bind to
  * @param port The localhost port number to open
  * @param backlog The maximum queue length for incomming connections
- * @param bindAddr the local address the server will bind to
  * @return The socket ready for accept, or -1 if an error occured.
  */
-int create_server_socket(int port, int backlog, const char *bindAddr);
+int create_server_socket(const char *address, int port, int backlog);
 
 
 /**
- * Check if data is available, if not, wait timeout milliseconds for data
- * to be present.
- * @param socket A socket
- * @param timeout How long to wait before timeout (value in milliseconds)
- * @return Return TRUE if the event occured, otherwise FALSE.
+ * Create a non-blocking server socket and bind it to the specified unix
+ * socket path, with the specified backlog.
+ * @param address the path to the unix socket
+ * @param backlog The maximum queue length for incomming connections
+ * @return The socket ready for accept, or -1 if an error occured.
  */
-int can_read(int socket, int timeout);
-
-
-/**
- * Check if data can be sent to the socket, if not, wait timeout
- * milliseconds for the socket to be ready.
- * @param socket A socket
- * @param timeout How long to wait before timeout (value in milliseconds)
- * @return Return TRUE if the event occured, otherwise FALSE.
- */
-int can_write(int socket, int timeout);
+int create_server_socket_unix(const char *path, int backlog);
 
 
 /**

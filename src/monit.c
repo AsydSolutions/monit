@@ -72,15 +72,16 @@
 
 #include "monit.h"
 #include "net.h"
-#include "ssl.h"
 #include "process.h"
 #include "state.h"
 #include "event.h"
+#include "engine.h"
 
 // libmonit
 #include "Bootstrap.h"
 #include "io/Dir.h"
 #include "io/File.h"
+#include "system/Time.h"
 #include "exceptions/AssertException.h"
 
 
@@ -124,10 +125,10 @@ Service_T servicelist_conf;   /**< The service list in conf file (c. in p.y) */
 ServiceGroup_T servicegrouplist;/**< The service group list (created in p.y) */
 SystemInfo_T systeminfo;                              /**< System infomation */
 
-pthread_t           heartbeatThread;           /**< M/Monit heartbeat thread */
-pthread_cond_t      heartbeatCond;            /**< Hearbeat wakeup condition */
-pthread_mutex_t     heartbeatMutex;                      /**< Hearbeat mutex */
-static volatile int heartbeatRunning = FALSE;     /**< Heartbeat thread flag */
+Thread_T heartbeatThread;
+Sem_T    heartbeatCond;
+Mutex_T  heartbeatMutex;
+static volatile boolean_t heartbeatRunning = false;
 
 int ptreesize = 0;
 int oldptreesize = 0;
@@ -160,6 +161,9 @@ int main(int argc, char **argv) {
         Bootstrap_setErrorHandler(vLogError);
         setlocale(LC_ALL, "C");
         prog = File_basename(argv[0]);
+#ifdef HAVE_OPENSSL
+        Ssl_start();
+#endif
         init_env();
         handle_options(argc, argv);
         do_init();
@@ -171,19 +175,19 @@ int main(int argc, char **argv) {
 
 /**
  * Wakeup a sleeping monit daemon.
- * Returns TRUE on success otherwise FALSE
+ * Returns true on success otherwise false
  */
-int do_wakeupcall() {
+boolean_t do_wakeupcall() {
         pid_t pid;
 
         if ((pid = exist_daemon()) > 0) {
                 kill(pid, SIGUSR1);
                 LogInfo("Monit daemon with PID %d awakened\n", pid);
 
-                return TRUE;
+                return true;
         }
 
-        return FALSE;
+        return false;
 }
 
 
@@ -196,9 +200,6 @@ int do_wakeupcall() {
  * datastructures and the log system.
  */
 static void do_init() {
-
-        int status;
-
         /*
          * Register interest for the SIGTERM signal,
          * in case we run in daemon mode this signal
@@ -236,32 +237,20 @@ static void do_init() {
         /*
          * Initialize the random number generator
          */
-        srandom((unsigned)(time(NULL) + getpid()));
+        srandom((unsigned)(Time_now() + getpid()));
 
         /*
          * Initialize the Runtime mutex. This mutex
          * is used to synchronize handling of global
          * service data
          */
-        status = pthread_mutex_init(&Run.mutex, NULL);
-        if (status != 0) {
-                LogError("Cannot initialize mutex -- %s\n", strerror(status));
-                exit(1);
-        }
+        Mutex_init(Run.mutex);
 
         /*
          * Initialize heartbeat mutex and condition
          */
-        status = pthread_mutex_init(&heartbeatMutex, NULL);
-        if (status != 0) {
-                LogError("Cannot initialize heartbeat mutex -- %s\n", strerror(status));
-                exit(1);
-        }
-        status = pthread_cond_init(&heartbeatCond, NULL);
-        if (status != 0) {
-                LogError("Cannot initialize heartbeat condition -- %s\n", strerror(status));
-                exit(1);
-        }
+        Mutex_init(heartbeatMutex);
+        Sem_init(heartbeatCond);
 
         /*
          * Get the position of the control file
@@ -320,10 +309,9 @@ static void do_init() {
  * monit daemon receives the SIGHUP signal.
  */
 static void do_reinit() {
-        int status;
-
-        LogInfo("Awakened by the SIGHUP signal\n");
-        LogInfo("Reinitializing Monit - Control file '%s'\n", Run.controlfile);
+        LogInfo("Awakened by the SIGHUP signal\n"
+                "Reinitializing Monit - Control file '%s'\n",
+                Run.controlfile);
 
         /* Wait non-blocking for any children that has exited. Since we
          reinitialize any information about children we have setup to wait
@@ -333,19 +321,17 @@ static void do_reinit() {
          globale process table which a sigchld handler can check */
         waitforchildren();
 
-        if(Run.mmonits && heartbeatRunning) {
-                if ((status = pthread_cond_signal(&heartbeatCond)) != 0)
-                        LogError("Failed to signal the heartbeat thread -- %s\n", strerror(status));
-                if ((status = pthread_join(heartbeatThread, NULL)) != 0)
-                        LogError("Failed to stop the heartbeat thread -- %s\n", strerror(status));
-                heartbeatRunning = FALSE;
+        if (Run.mmonits && heartbeatRunning) {
+                Sem_signal(heartbeatCond);
+                Thread_join(heartbeatThread);
+                heartbeatRunning = false;
         }
 
-        Run.doreload = FALSE;
+        Run.doreload = false;
 
         /* Stop http interface */
-        if (Run.dohttpd)
-                monit_http(STOP_HTTP);
+        if (Run.httpd.flags & Httpd_Net || Run.httpd.flags & Httpd_Unix)
+                monit_http(Httpd_Stop);
 
         /* Save the current state (no changes are possible now since the http thread is stopped) */
         State_save();
@@ -387,15 +373,15 @@ static void do_reinit() {
 
         /* Start http interface */
         if (can_http())
-                monit_http(START_HTTP);
+                monit_http(Httpd_Start);
 
         /* send the monit startup notification */
-        Event_post(Run.system, Event_Instance, STATE_CHANGED, Run.system->action_MONIT_RELOAD, "Monit reloaded");
+        Event_post(Run.system, Event_Instance, State_Changed, Run.system->action_MONIT_RELOAD, "Monit reloaded");
 
-        if(Run.mmonits && ((status = pthread_create(&heartbeatThread, NULL, heartbeat, NULL)) != 0))
-                LogError("Failed to create the heartbeat thread -- %s\n", strerror(status));
-        else
-                heartbeatRunning = TRUE;
+        if (Run.mmonits) {
+                Thread_create(heartbeatThread, heartbeat, NULL);
+                heartbeatRunning = true;
+        }
 }
 
 
@@ -406,7 +392,7 @@ static void do_action(char **args) {
         char *action = args[optind];
         char *service = args[++optind];
 
-        Run.once = TRUE;
+        Run.once = true;
 
         if (! action) {
                 do_default();
@@ -417,26 +403,19 @@ static void do_action(char **args) {
                    IS(action, "restart")) {
                 if (Run.mygroup || service) {
                         int errors = 0;
-                        int (*_control_service)(const char *, const char *) = exist_daemon() ? control_service_daemon : control_service_string;
+                        boolean_t (*_control_service)(const char *, const char *) = exist_daemon() ? control_service_daemon : control_service_string;
 
                         if (Run.mygroup) {
-                                ServiceGroup_T sg = NULL;
-
-                                for (sg = servicegrouplist; sg; sg = sg->next) {
-                                        if (! strcasecmp(Run.mygroup, sg->name)) {
-                                                ServiceGroupMember_T sgm = NULL;
-
-                                                for (sgm = sg->members; sgm; sgm = sgm->next)
+                                for (ServiceGroup_T sg = servicegrouplist; sg; sg = sg->next) {
+                                        if (IS(Run.mygroup, sg->name)) {
+                                                for (ServiceGroupMember_T sgm = sg->members; sgm; sgm = sgm->next)
                                                         if (! _control_service(sgm->name, action))
                                                                 errors++;
-
                                                 break;
                                         }
                                 }
                         } else if (IS(service, "all")) {
-                                Service_T s = NULL;
-
-                                for (s = servicelist; s; s = s->next) {
+                                for (Service_T s = servicelist; s; s = s->next) {
                                         if (s->visited)
                                                 continue;
                                         if (! _control_service(s->name, action))
@@ -467,7 +446,7 @@ static void do_action(char **args) {
         } else if (IS(action, "quit")) {
                 kill_daemon(SIGTERM);
         } else if (IS(action, "validate")) {
-                if (! validate())
+                if (validate())
                         exit(1);
         } else {
                 LogError("Invalid argument -- %s  (-h will show valid arguments)\n", action);
@@ -480,29 +459,28 @@ static void do_action(char **args) {
  * Finalize monit
  */
 static void do_exit() {
-        int status;
         sigset_t ns;
-
         set_signal_block(&ns, NULL);
-        Run.stopped = TRUE;
-        if (Run.isdaemon && !Run.once) {
+        Run.stopped = true;
+        if (Run.isdaemon && ! Run.once) {
                 if (can_http())
-                        monit_http(STOP_HTTP);
+                        monit_http(Httpd_Stop);
 
-                if(Run.mmonits && heartbeatRunning) {
-                        if ((status = pthread_cond_signal(&heartbeatCond)) != 0)
-                                LogError("Failed to signal the heartbeat thread -- %s\n", strerror(status));
-                        if ((status = pthread_join(heartbeatThread, NULL)) != 0)
-                                LogError("Failed to stop the heartbeat thread -- %s\n", strerror(status));
-                        heartbeatRunning = FALSE;
+                if (Run.mmonits && heartbeatRunning) {
+                        Sem_signal(heartbeatCond);
+                        Thread_join(heartbeatThread);
+                        heartbeatRunning = false;
                 }
 
-                LogInfo("Monit daemon with pid [%d] killed\n", (int)getpid());
+                LogInfo("Monit daemon with pid [%d] stopped\n", (int)getpid());
 
                 /* send the monit stop notification */
-                Event_post(Run.system, Event_Instance, STATE_CHANGED, Run.system->action_MONIT_STOP, "Monit stopped");
+                Event_post(Run.system, Event_Instance, State_Changed, Run.system->action_MONIT_STOP, "Monit stopped");
         }
         gc();
+#ifdef HAVE_OPENSSL
+        Ssl_stop();
+#endif
         exit(0);
 }
 
@@ -513,23 +491,24 @@ static void do_exit() {
  * Also, if specified, start the monit http server if in deamon mode.
  */
 static void do_default() {
-        int status;
-
         if (Run.isdaemon) {
                 if (do_wakeupcall())
                         exit(0);
 
-                Run.once = FALSE;
-                if (can_http())
-                        LogInfo("Starting Monit " VERSION " daemon with http interface at [%s:%d]\n",
-                                Run.bind_addr ? Run.bind_addr : "*", Run.httpdport);
-                else
-                        LogInfo("Starting Monit " VERSION " daemon\n");
+                Run.once = false;
+                if (can_http()) {
+                        if (Run.httpd.flags & Httpd_Net)
+                                LogInfo("Starting Monit %s daemon with http interface at [%s]:%d\n", VERSION, Run.httpd.socket.net.address ? Run.httpd.socket.net.address : "*", Run.httpd.socket.net.port);
+                        else if (Run.httpd.flags & Httpd_Unix)
+                                LogInfo("Starting Monit %s daemon with http interface at %s\n", VERSION, Run.httpd.socket.unix.path);
+                } else {
+                        LogInfo("Starting Monit %s daemon\n", VERSION);
+                }
 
                 if (Run.startdelay)
                         LogInfo("Monit start delay set -- pause for %ds\n", Run.startdelay);
 
-                if (Run.init != TRUE)
+                if (! Run.init)
                         daemonize();
                 else if (! Run.debug)
                         Util_redirectStdFds();
@@ -546,7 +525,7 @@ static void do_default() {
                 atexit(file_finalize);
 
                 if (Run.startdelay) {
-                        time_t now = time(NULL);
+                        time_t now = Time_now();
                         time_t delay = now + Run.startdelay;
 
                         /* sleep can be interrupted by signal => make sure we paused long enough */
@@ -554,31 +533,31 @@ static void do_default() {
                                 sleep((unsigned int)(delay - now));
                                 if (Run.stopped)
                                         do_exit();
-                                now = time(NULL);
+                                now = Time_now();
                         }
                 }
 
                 if (can_http())
-                        monit_http(START_HTTP);
+                        monit_http(Httpd_Start);
 
                 /* send the monit startup notification */
-                Event_post(Run.system, Event_Instance, STATE_CHANGED, Run.system->action_MONIT_START, "Monit started");
+                Event_post(Run.system, Event_Instance, State_Changed, Run.system->action_MONIT_START, "Monit started");
 
-                if(Run.mmonits && ((status = pthread_create(&heartbeatThread, NULL, heartbeat, NULL)) != 0))
-                        LogError("Failed to create the heartbeat thread -- %s\n", strerror(status));
-                else
-                        heartbeatRunning = TRUE;
+                if (Run.mmonits) {
+                        Thread_create(heartbeatThread, heartbeat, NULL);
+                        heartbeatRunning = true;
+                }
 
-                while (TRUE) {
+                while (true) {
                         validate();
                         State_save();
 
                         /* In the case that there is no pending action then sleep */
-                        if (!Run.doaction)
+                        if (! Run.doaction)
                                 sleep(Run.polltime);
 
                         if (Run.dowakeup) {
-                                Run.dowakeup = FALSE;
+                                Run.dowakeup = false;
                                 LogInfo("Awakened by User defined signal 1\n");
                         }
 
@@ -623,126 +602,126 @@ static void handle_options(int argc, char **argv) {
         };
         while ((opt = getopt_long(argc, argv, shortopts, longopts, NULL)) != -1)
 #else
-        while ((opt = getopt(argc, argv, shortopts)) != -1)
+                while ((opt = getopt(argc, argv, shortopts)) != -1)
 #endif
-        {
-                switch (opt) {
-                        case 'c':
-                        {
-                                char *f = optarg;
-                                if (f[0] != SEPARATOR_CHAR)
-                                        f = File_getRealPath(optarg, (char[PATH_MAX]){});
-                                if (! f)
-                                        THROW(AssertException, "The control file '%s' does not exist at %s",
-                                              Str_trunc(optarg, 80), Dir_cwd((char[STRLEN]){}, STRLEN));
-                                if (! File_isFile(f))
-                                        THROW(AssertException, "The control file '%s' is not a file", Str_trunc(f, 80));
-                                if (! File_isReadable(f))
-                                        THROW(AssertException, "The control file '%s' is not readable", Str_trunc(f, 80));
-                                Run.controlfile = Str_dup(f);
-                                break;
-                        }
-                        case 'd':
-                        {
-                                Run.isdaemon = TRUE;
-                                sscanf(optarg, "%d", &Run.polltime);
-                                if (Run.polltime < 1) {
-                                        LogError("Option -%c requires a natural number\n", opt);
+                {
+                        switch (opt) {
+                                case 'c':
+                                {
+                                        char *f = optarg;
+                                        if (f[0] != SEPARATOR_CHAR)
+                                                f = File_getRealPath(optarg, (char[PATH_MAX]){});
+                                        if (! f)
+                                                THROW(AssertException, "The control file '%s' does not exist at %s",
+                                                      Str_trunc(optarg, 80), Dir_cwd((char[STRLEN]){}, STRLEN));
+                                        if (! File_isFile(f))
+                                                THROW(AssertException, "The control file '%s' is not a file", Str_trunc(f, 80));
+                                        if (! File_isReadable(f))
+                                                THROW(AssertException, "The control file '%s' is not readable", Str_trunc(f, 80));
+                                        Run.controlfile = Str_dup(f);
+                                        break;
+                                }
+                                case 'd':
+                                {
+                                        Run.isdaemon = true;
+                                        sscanf(optarg, "%d", &Run.polltime);
+                                        if (Run.polltime < 1) {
+                                                LogError("Option -%c requires a natural number\n", opt);
+                                                exit(1);
+                                        }
+                                        break;
+                                }
+                                case 'g':
+                                {
+                                        Run.mygroup = Str_dup(optarg);
+                                        break;
+                                }
+                                case 'l':
+                                {
+                                        Run.logfile = Str_dup(optarg);
+                                        if (IS(Run.logfile, "syslog"))
+                                                Run.use_syslog = true;
+                                        Run.dolog = true;
+                                        break;
+                                }
+                                case 'p':
+                                {
+                                        Run.pidfile = Str_dup(optarg);
+                                        break;
+                                }
+                                case 's':
+                                {
+                                        Run.statefile = Str_dup(optarg);
+                                        break;
+                                }
+                                case 'I':
+                                {
+                                        Run.init = true;
+                                        break;
+                                }
+                                case 'i':
+                                {
+                                        deferred_opt = 'i';
+                                        break;
+                                }
+                                case 'r':
+                                {
+                                        deferred_opt = 'r';
+                                        break;
+                                }
+                                case 't':
+                                {
+                                        deferred_opt = 't';
+                                        break;
+                                }
+                                case 'v':
+                                {
+                                        Run.debug++;
+                                        break;
+                                }
+                                case 'H':
+                                {
+                                        if (argc > optind)
+                                                Util_printHash(argv[optind]);
+                                        else
+                                                Util_printHash(NULL);
+                                        exit(0);
+                                        break;
+                                }
+                                case 'V':
+                                {
+                                        version();
+                                        exit(0);
+                                        break;
+                                }
+                                case 'h':
+                                {
+                                        help();
+                                        exit(0);
+                                        break;
+                                }
+                                case '?':
+                                {
+                                        switch (optopt) {
+                                                case 'c':
+                                                case 'd':
+                                                case 'g':
+                                                case 'l':
+                                                case 'p':
+                                                case 's':
+                                                {
+                                                        LogError("Option -- %c requires an argument\n", optopt);
+                                                        break;
+                                                }
+                                                default:
+                                                {
+                                                        LogError("Invalid option -- %c  (-h will show valid options)\n", optopt);
+                                                }
+                                        }
                                         exit(1);
                                 }
-                                break;
-                        }
-                        case 'g':
-                        {
-                                Run.mygroup = Str_dup(optarg);
-                                break;
-                        }
-                        case 'l':
-                        {
-                                Run.logfile = Str_dup(optarg);
-                                if (IS(Run.logfile, "syslog"))
-                                        Run.use_syslog = TRUE;
-                                Run.dolog = TRUE;
-                                break;
-                        }
-                        case 'p':
-                        {
-                                Run.pidfile = Str_dup(optarg);
-                                break;
-                        }
-                        case 's':
-                        {
-                                Run.statefile = Str_dup(optarg);
-                                break;
-                        }
-                        case 'I':
-                        {
-                                Run.init = TRUE;
-                                break;
-                        }
-                        case 'i':
-                        {
-                                deferred_opt = 'i';
-                                break;
-                        }
-                        case 'r':
-                        {
-                                deferred_opt = 'r';
-                                break;
-                        }
-                        case 't':
-                        {
-                                deferred_opt = 't';
-                                break;
-                        }
-                        case 'v':
-                        {
-                                Run.debug++;
-                                break;
-                        }
-                        case 'H':
-                        {
-                                if (argc > optind)
-                                        Util_printHash(argv[optind]);
-                                else
-                                        Util_printHash(NULL);
-                                exit(0);
-                                break;
-                        }
-                        case 'V':
-                        {
-                                version();
-                                exit(0);
-                                break;
-                        }
-                        case 'h':
-                        {
-                                help();
-                                exit(0);
-                                break;
-                        }
-                        case '?':
-                        {
-                                switch(optopt) {
-                                        case 'c':
-                                        case 'd':
-                                        case 'g':
-                                        case 'l':
-                                        case 'p':
-                                        case 's':
-                                        {
-                                                LogError("Option -- %c requires an argument\n", optopt);
-                                                break;
-                                        }
-                                        default:
-                                        {
-                                                LogError("Invalid option -- %c  (-h will show valid options)\n", optopt);
-                                        }
-                                }
-                                exit(1);
                         }
                 }
-        }
         /* Handle deferred options to make arguments to the program positional
          independent. These options are handled last, here as they represent exit
          points in the application and the control-file might be set with -c and
@@ -829,7 +808,7 @@ static void help() {
  */
 static void version() {
         printf("This is Monit version " VERSION "\n");
-        printf("Copyright (C) 2001-2014 Tildeslash Ltd.");
+        printf("Copyright (C) 2001-2015 Tildeslash Ltd.");
         printf(" All Rights Reserved.\n");
 }
 
@@ -847,12 +826,15 @@ static void *heartbeat(void *args) {
         {
                 while (! Run.stopped && ! Run.doreload) {
                         handle_mmonit(NULL);
-                        wait.tv_sec = time(NULL) + Run.polltime;
+                        wait.tv_sec = Time_now() + Run.polltime;
                         wait.tv_nsec = 0;
-                        pthread_cond_timedwait(&heartbeatCond, &heartbeatMutex, &wait);
+                        Sem_timeWait(heartbeatCond, heartbeatMutex, wait);
                 }
         }
         END_LOCK;
+#ifdef HAVE_OPENSSL
+        Ssl_threadCleanup();
+#endif
         LogInfo("M/Monit heartbeat stopped\n");
         return NULL;
 }
@@ -862,7 +844,7 @@ static void *heartbeat(void *args) {
  * Signalhandler for a daemon reload call
  */
 static RETSIGTYPE do_reload(int sig) {
-        Run.doreload = TRUE;
+        Run.doreload = true;
 }
 
 
@@ -870,7 +852,7 @@ static RETSIGTYPE do_reload(int sig) {
  * Signalhandler for monit finalization
  */
 static RETSIGTYPE do_destroy(int sig) {
-        Run.stopped = TRUE;
+        Run.stopped = true;
 }
 
 
@@ -878,7 +860,7 @@ static RETSIGTYPE do_destroy(int sig) {
  * Signalhandler for a daemon wakeup call
  */
 static RETSIGTYPE do_wakeup(int sig) {
-        Run.dowakeup = TRUE;
+        Run.dowakeup = true;
 }
 
 

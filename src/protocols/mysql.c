@@ -47,7 +47,12 @@
 
 
 #define MYSQL_ERROR 0xff
-typedef struct {unsigned int len:24, seq:8; unsigned char *msg; unsigned char buf[STRLEN + 1];} mysql_packet_t;
+typedef struct {
+        unsigned int len:24,
+        seq:8;
+        unsigned char *msg;
+        unsigned char buf[STRLEN + 1];
+} mysql_packet_t; /* Keep position, don't memory pack! */
 
 
 /* --------------------------------------------------------------- Private */
@@ -71,11 +76,11 @@ static unsigned int B3(unsigned char *b) {
 }
 
 
-static int _response(Socket_T socket, mysql_packet_t *pkt) {
+static boolean_t _response(Socket_T socket, mysql_packet_t *pkt) {
         memset(pkt, 0, sizeof *pkt);
         if (socket_read(socket, pkt->buf, 4) < 4) {
                 socket_setError(socket, "Error receiving server response -- %s", STRERROR);
-                return FALSE;
+                return false;
         }
         pkt->len = B3(pkt->buf);
         pkt->len = pkt->len > STRLEN ? STRLEN : pkt->len; // Adjust packet length for this buffer
@@ -83,15 +88,15 @@ static int _response(Socket_T socket, mysql_packet_t *pkt) {
         pkt->msg = pkt->buf + 4;
         if (socket_read(socket, pkt->msg, pkt->len) != pkt->len) {
                 socket_setError(socket, "Error receiving server response -- %s", STRERROR);
-                return FALSE;
+                return false;
         }
         if (*pkt->msg == MYSQL_ERROR) {
                 unsigned short code = B2(pkt->msg + 1);
                 unsigned char *err = pkt->msg + 9;
                 socket_setError(socket, "Server returned error code %d -- %s", code, err);
-                return FALSE;
+                return false;
         }
-        return TRUE;
+        return true;
 }
 
 
@@ -100,12 +105,12 @@ static int _response(Socket_T socket, mysql_packet_t *pkt) {
 
 /**
  * Simple MySQL test. Connect to MySQL and read Server Handshake Packet.
- * If we can read the packet and it is not an error packet we assume the 
+ * If we can read the packet and it is not an error packet we assume the
  * server is up and working.
  *
  *  @see http://dev.mysql.com/doc/internals/en/client-server-protocol.html
  */
-int check_mysql(Socket_T socket) {
+boolean_t check_mysql(Socket_T socket) {
         ASSERT(socket);
         mysql_packet_t pkt;
         if (_response(socket, &pkt)) {
@@ -119,9 +124,9 @@ int check_mysql(Socket_T socket) {
                         socket_setError(socket, "Invalid packet sequence id %d", pkt.seq);
                 else {
                         DEBUG("MySQL: Protocol: %d, Server Version: %s\n", protocol_version, server_version);
-                        return TRUE;
+                        return true;
                 }
         }
-        return FALSE;
+        return false;
 }
 

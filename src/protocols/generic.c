@@ -65,49 +65,49 @@ static char *_escapeZeroInExpectBuffer(char *s, int n) {
  *
  *  @file
  */
-int check_generic(Socket_T socket) {
+boolean_t check_generic(Socket_T socket) {
         Generic_T g = NULL;
         char *buf;
 #ifdef HAVE_REGEX_H
         int regex_return;
 #endif
-        
+
         ASSERT(socket);
-        
-        if(socket_get_Port(socket))
+
+        if (socket_get_Port(socket))
                 g = ((Port_T)(socket_get_Port(socket)))->generic;
-        
+
         buf = CALLOC(sizeof(char), Run.expectbuffer + 1);
-        
+
         while (g != NULL) {
-                
+
                 if (g->send != NULL) {
-                        
+
                         /* Unescape any \0x00 escaped chars in g's send string
                          to allow sending a string containing \0 bytes also */
                         char *X = Str_dup(g->send);
                         int l = Util_handle0Escapes(X);
-                        
-                        if(socket_write(socket, X, l) < 0) {
+
+                        if (socket_write(socket, X, l) < 0) {
                                 socket_setError(socket, "GENERIC: error sending data -- %s", STRERROR);
                                 FREE(X);
                                 FREE(buf);
-                                return FALSE;
+                                return false;
                         } else
                                 DEBUG("GENERIC: successfully sent: '%s'\n", g->send);
-                        
+
                         FREE(X);
-                        
+
                 } else if (g->expect != NULL) {
                         /* Since the protocol is unknown we need to wait on EOF. To avoid waiting
-                         timeout seconds on EOF we first read one byte to fill the socket's read 
-                         buffer and then set a low timeout on next read which reads remaining bytes 
+                         timeout seconds on EOF we first read one byte to fill the socket's read
+                         buffer and then set a low timeout on next read which reads remaining bytes
                          as well as wait on EOF */
                         *buf = socket_read_byte(socket);
                         if (*buf < 0) {
                                 socket_setError(socket, "GENERIC: error receiving data -- %s", STRERROR);
                                 FREE(buf);
-                                return FALSE;
+                                return false;
                         }
                         int timeout = socket_getTimeout(socket);
                         socket_setTimeout(socket, 200);
@@ -123,33 +123,33 @@ int check_generic(Socket_T socket) {
                                 regerror(regex_return, g->expect, e, STRLEN);
                                 socket_setError(socket, "GENERIC: receiving unexpected data [%s] -- %s", Str_trunc(buf, STRLEN - 4), e);
                                 FREE(buf);
-                                return FALSE;
+                                return false;
                         } else
                                 DEBUG("GENERIC: successfully received: '%s'\n", Str_trunc(buf, STRLEN - 4));
-                        
+
 #else
                         /* w/o regex support */
-                        
+
                         if (strncmp(buf, g->expect, strlen(g->expect)) != 0) {
                                 socket_setError(socket, "GENERIC: receiving unexpected data [%s]", Str_trunc(buf, STRLEN - 4));
                                 FREE(buf);
-                                return FALSE;
+                                return false;
                         } else
                                 DEBUG("GENERIC: successfully received: '%s'\n", Str_trunc(buf, STRLEN - 4));
-                        
+
 #endif
-                        
+
                 } else {
                         /* This should not happen */
                         socket_setError(socket, "GENERIC: unexpected strangeness");
                         FREE(buf);
-                        return FALSE;
+                        return false;
                 }
                 g = g->next;
         }
-        
+
         FREE(buf);
-        return TRUE;
-        
+        return true;
+
 }
 

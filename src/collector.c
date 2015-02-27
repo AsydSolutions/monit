@@ -60,9 +60,9 @@
  * Send message to the server
  * @param C An mmonit object
  * @param D Data to send
- * @return TRUE if the message sending succeeded otherwise FALSE
+ * @return true if the message sending succeeded otherwise false
  */
-static int data_send(Socket_T socket, Mmonit_T C, const char *D) {
+static boolean_t data_send(Socket_T socket, Mmonit_T C, const char *D) {
         char *auth = Util_getBasicAuthHeader(C->url->user, C->url->password);
         int rv = socket_print(socket,
                               "POST %s HTTP/1.1\r\n"
@@ -79,36 +79,36 @@ static int data_send(Socket_T socket, Mmonit_T C, const char *D) {
                               C->url->hostname, C->url->port,
                               (unsigned long)strlen(D),
                               VERSION,
-                              auth?auth:"",
+                              auth ? auth : "",
                               D);
         FREE(auth);
         if (rv <0) {
                 LogError("M/Monit: error sending data to %s -- %s\n", C->url->url, STRERROR);
-                return FALSE;
+                return false;
         }
-        return TRUE;
+        return true;
 }
 
 
 /**
  * Check that the server returns a valid HTTP response
  * @param C An mmonit object
- * @return TRUE if the response is valid otherwise FALSE
+ * @return true if the response is valid otherwise false
  */
-static int data_check(Socket_T socket, Mmonit_T C) {
+static boolean_t data_check(Socket_T socket, Mmonit_T C) {
         int  status;
         char buf[STRLEN];
         if (! socket_readln(socket, buf, sizeof(buf))) {
                 LogError("M/Monit: error receiving data from %s -- %s\n", C->url->url, STRERROR);
-                return FALSE;
+                return false;
         }
         Str_chomp(buf);
         int n = sscanf(buf, "%*s %d", &status);
         if (n != 1 || (status >= 400)) {
                 LogError("M/Monit: message sending failed to %s -- %s\n", C->url->url, buf);
-                return FALSE;
+                return false;
         }
-        return TRUE;
+        return true;
 }
 
 
@@ -118,25 +118,25 @@ static int data_check(Socket_T socket, Mmonit_T C) {
 /**
  * Post event or status data message to mmonit
  * @param E An event object or NULL for status data
- * @return If failed, return HANDLER_MMONIT flag or HANDLER_SUCCEEDED flag if succeeded
+ * @return If failed, return Handler_Mmonit flag or Handler_Succeeded flag if succeeded
  */
-int handle_mmonit(Event_T E) {
-        int       rv = HANDLER_MMONIT;
-        Socket_T  socket = NULL;
-        Mmonit_T  C = Run.mmonits;
+Handler_Type handle_mmonit(Event_T E) {
+        Handler_Type rv = Handler_Mmonit;
         /* The event is sent to mmonit just once - only in the case that the state changed */
-        if (! C || (E && ! E->state_changed))
-                return HANDLER_SUCCEEDED;
+        if (! Run.mmonits || (E && ! E->state_changed))
+                return Handler_Succeeded;
         StringBuffer_T sb = StringBuffer_create(256);
-        for (; C; C = C->next) {
-                if (! (socket = socket_create_t(C->url->hostname, C->url->port, SOCKET_TCP, C->ssl, C->timeout))) {
+        for (Mmonit_T C = Run.mmonits; C; C = C->next) {
+                Socket_T  socket = socket_create_t(C->url->hostname, C->url->port, SOCKET_TCP, Socket_Ip, C->ssl, C->timeout);
+                if (! socket) {
                         LogError("M/Monit: cannot open a connection to %s\n", C->url->url);
                         goto error;
                 }
                 if (! socket_set_tcp_nodelay(socket)) {
-                    LogError("M/Monit: error setting TCP_NODELAY on socket: %s -- %s\n", C->url->url, STRERROR);
+                        LogError("M/Monit: error setting TCP_NODELAY on socket: %s -- %s\n", C->url->url, STRERROR);
                 }
-                status_xml(sb, E, E ? LEVEL_SUMMARY : LEVEL_FULL, 2, socket_get_local_host(socket));
+                char buf[STRLEN];
+                status_xml(sb, E, E ? Level_Summary : Level_Full, 2, socket_get_local_host(socket, buf, sizeof(buf)));
                 if (! data_send(socket, C, StringBuffer_toString(sb))) {
                         LogError("M/Monit: cannot send %s message to %s\n", E ? "event" : "status", C->url->url);
                         goto error;
@@ -146,9 +146,9 @@ int handle_mmonit(Event_T E) {
                         LogError("M/Monit: %s message to %s failed\n", E ? "event" : "status", C->url->url);
                         goto error;
                 }
-                rv = HANDLER_SUCCEEDED; // Return success if at least one M/Monit succeeded
+                rv = Handler_Succeeded; // Return success if at least one M/Monit succeeded
                 DEBUG("M/Monit: %s message sent to %s\n", E ? "event" : "status", C->url->url);
-error:
+        error:
                 if (socket)
                         socket_free(&socket);
         }

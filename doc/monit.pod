@@ -437,6 +437,15 @@ based on the context. To turn off logging, simply do not set the
 logfile in the control file (and of course, do not use the -l
 switch)
 
+The format for logfile is:
+
+    [date] priority : message
+
+for example:
+
+    [CET Jan  5 18:49:29] info : 'mymachine' Monit started
+
+
 
 =head1 DAEMON MODE
 
@@ -545,19 +554,20 @@ files in I</etc/monit.d> that ends with the prefix I<.cfg>.
 =head1 MONIT HTTPD
 
 If specified in the control file, Monit will start with http support.
-From a Browser you can then start and stop services, disable or enable
-service monitoring as well as view the status of each service. Also, if
-Monit logs to its own file, you can view the content of this logfile in
-a Browser.
+You can then use Monit CLI to start and stop services, disable or
+enable service monitoring as well as view the status of each service.
 
-Note that HTTP support is required for almost all Monit CLI interface
-operation, as CLI commands (such as "monit status") are handled by
-communicating with the Monit background process via the the HTTP
-interface. So basically you should have this enable, though you can
-bind the HTTP interface to localhost only so Monit is not accessible
-from the outside.
+If http support is enabled over TCP rather than over a Unix Socket, you
+can also view Monit's informative dashboard in your web browser.
 
-Syntax:
+Note that if HTTP support is disabled, the Monit CLI interface will
+have reduced functionality, as most CLI commands (such as "monit
+status") need to communicate with the Monit background process via the
+the HTTP interface. We strongly recommend having HTTP support enabled.
+If security is a concern, bind the HTTP interface to local host only or
+use Unix Socket so Monit is not accessible from the outside.
+
+Syntax for TCP port:
 
   SET HTTPD PORT <number> [ADDRESS <hostname | IP-address>]
       [SSL <ENABLE | DISABLE>]
@@ -575,6 +585,21 @@ Example:
 You can now use L<http://localhost:2812/|http://localhost:2812/> to
 access Monit's web interface from a browser, after you have entered
 username and password as credentials.
+
+Syntax for Unix Socket:
+
+  SET HTTPD UNIXSOCKET <path>
+      ALLOW <user:password>+
+
+Example:
+
+ set httpd unixsocket /var/run/monit.sock
+     allow username:password
+
+=head4 Options: 
+
+B<UNIXSOCKET> set the path to the Unix Socket Monit should bind to 
+and listen on.
 
 B<PORT> set the port Monit should bind to and listen on. Monit is
 usually setup on port 2812.
@@ -1593,9 +1618,8 @@ Note: the maximum value for cycles is 64.
 
 =head2 EXISTENCE TESTING
 
-Monit's default action when a service does not exist (for example a
-process is not running, a file does not exist, etc.) is to perform
-the restart action.
+This test is always active for the process, file, directory and fifo
+checks and is if not defined, it defaults to a restart action.
 
 You can override the default action with the following statement:
 
@@ -1872,10 +1896,16 @@ Example:
 
 =head2 SPACE TESTING
 
-Monit can test a filesystem or disk for space usage. This test may only
-be used in the context of a filesystem service type.
+Monit can test a filesystem or a disk for space usage. This test may
+only be used in the context of a filesystem service type.
 
-Monit will check the total space usage, including reserved blocks.
+Filesystems usually have some space reserved for the root user (ca.
+1-5%), so non-superusers cannot write to a nearly full filesystem. If
+you set a limit for the filesystem which is used by non-root users you
+might want to consider these reserved blocks when setting the limit.
+You can use Monit itself to view the reserved blocks percentage by
+using the CLI status command or the HTTP interface for the given
+filesystem.
 
 Syntax:
 
@@ -1932,9 +1962,13 @@ Monit can test the permissions of file objects. This test may
 only be used in the context of a file, fifo, directory or
 filesystem service types.
 
-Syntax:
+Syntax for testing specific permissions:
 
  IF FAILED PERM(ISSION) octalnumber THEN action
+
+Syntax for testing any permission change:
+
+ IF CHANGED PERM(ISSION) THEN action
 
 I<octalnumber> defines permissions for a file, a directory or a
 filesystem as four octal digits (0-7). Valid range is 0000 - 7777 (you
@@ -3208,7 +3242,7 @@ this man page also receive inspiration from the same authors.
 
 =head1 COPYRIGHT
 
-Copyright (C) 2001-2014 by Tildeslash Ltd. All Rights Reserved.
+Copyright (C) 2001-2015 by Tildeslash Ltd. All Rights Reserved.
 This product is distributed in the hope that it will be useful,
 but WITHOUT any warranty; without even the implied warranty of
 MERCHANTABILITY or FITNESS for a particular purpose.

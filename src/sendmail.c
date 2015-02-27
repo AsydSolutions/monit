@@ -85,12 +85,12 @@
 typedef struct {
         Socket_T socket;
         StringBuffer_T status_message;
-        int quit;
+        boolean_t quit;
         const char *server;
         int port;
         const char *username;
         const char *password;
-        Ssl_T ssl;
+        SslOptions_T ssl;
         char localhost[STRLEN];
 } SendMail_T;
 
@@ -137,11 +137,11 @@ static void open_server(SendMail_T *S) {
                 THROW(IOException, "No mail servers are defined -- see manual for 'set mailserver' statement");
         }
         do {
-                /* wait with ssl-connect if SSL_VERSION_TLSV1 is set (rfc2487) */
-                if (! S->ssl.use_ssl || S->ssl.version == SSL_VERSION_TLSV1 || S->ssl.version == SSL_VERSION_TLSV11 || S->ssl.version == SSL_VERSION_TLSV12)
-                        S->socket = socket_new(S->server, S->port, SOCKET_TCP, FALSE, Run.mailserver_timeout);
+                /* wait with ssl-connect if SSL_TLS* is set (rfc2487) */
+                if (! S->ssl.use_ssl || S->ssl.version == SSL_TLSV1 || S->ssl.version == SSL_TLSV11 || S->ssl.version == SSL_TLSV12)
+                        S->socket = socket_new(S->server, S->port, SOCKET_TCP, Socket_Ip, false, Run.mailserver_timeout);
                 else
-                        S->socket = socket_create_t(S->server, S->port, SOCKET_TCP, S->ssl, Run.mailserver_timeout);
+                        S->socket = socket_create_t(S->server, S->port, SOCKET_TCP, Socket_Ip, S->ssl, Run.mailserver_timeout);
                 if (S->socket)
                         break;
                 LogError("Cannot open a connection to the mailserver '%s:%i' -- %s\n", S->server, S->port, STRERROR);
@@ -156,8 +156,8 @@ static void open_server(SendMail_T *S) {
                 } else {
                         THROW(IOException, "No mail servers are available");
                 }
-        } while (TRUE);
-        S->quit = TRUE;
+        } while (true);
+        S->quit = true;
 }
 
 
@@ -165,7 +165,7 @@ static void close_server(SendMail_T *S) {
         TRY
         {
                 if (S->quit) {
-                        S->quit = FALSE;
+                        S->quit = false;
                         do_send(S, "QUIT\r\n");
                         do_status(S);
                 }
@@ -189,12 +189,11 @@ static void close_server(SendMail_T *S) {
 /**
  * Send mail messages via SMTP
  * @param mail A Mail object
- * @return FALSE if failed, TRUE if succeeded
+ * @return false if failed, true if succeeded
  */
-int sendmail(Mail_T mail) {
-        Mail_T m;
+boolean_t sendmail(Mail_T mail) {
         SendMail_T S;
-        int failed = FALSE;
+        boolean_t failed = false;
         char now[STRLEN];
 
         ASSERT(mail);
@@ -208,14 +207,14 @@ int sendmail(Mail_T mail) {
                 Time_gmtstring(Time_now(), now);
                 snprintf(S.localhost, sizeof(S.localhost), "%s", Run.mail_hostname ? Run.mail_hostname : Run.system->name);
                 do_status(&S);
-                do_send(&S, "%s %s\r\n", ((S.ssl.use_ssl && (S.ssl.version == SSL_VERSION_TLSV1 || S.ssl.version == SSL_VERSION_TLSV11 || S.ssl.version == SSL_VERSION_TLSV12)) || S.username) ? "EHLO" : "HELO", S.localhost); // Use EHLO if TLS or Authentication is requested
+                do_send(&S, "%s %s\r\n", ((S.ssl.use_ssl && (S.ssl.version == SSL_TLSV1 || S.ssl.version == SSL_TLSV11 || S.ssl.version == SSL_TLSV12)) || S.username) ? "EHLO" : "HELO", S.localhost); // Use EHLO if TLS or Authentication is requested
                 do_status(&S);
                 /* Switch to TLS now if configured */
-                if (S.ssl.use_ssl && (S.ssl.version == SSL_VERSION_TLSV1 || S.ssl.version == SSL_VERSION_TLSV11 || S.ssl.version == SSL_VERSION_TLSV12)) {
+                if (S.ssl.use_ssl && (S.ssl.version == SSL_TLSV1 || S.ssl.version == SSL_TLSV11 || S.ssl.version == SSL_TLSV12)) {
                         do_send(&S, "STARTTLS\r\n");
                         do_status(&S);
                         if (! socket_switch2ssl(S.socket, S.ssl)) {
-                                S.quit = FALSE;
+                                S.quit = false;
                                 THROW(IOException, "Cannot switch to SSL");
                         }
                         /* After starttls, send ehlo again: RFC 3207: 4.2 Result of the STARTTLS Command */
@@ -270,7 +269,7 @@ int sendmail(Mail_T mail) {
                                 THROW(IOException, "Authentication failed -- no supported authentication methods found");
                         }
                 }
-                for (m = mail; m; m = m->next) {
+                for (Mail_T m = mail; m; m = m->next) {
                         do_send(&S, "MAIL FROM: <%s>\r\n", m->from);
                         do_status(&S);
                         do_send(&S, "RCPT TO: <%s>\r\n", m->to);
@@ -287,7 +286,7 @@ int sendmail(Mail_T mail) {
                         do_send(&S, "MIME-Version: 1.0\r\n");
                         do_send(&S, "Content-Type: text/plain; charset=\"iso-8859-1\"\r\n");
                         do_send(&S, "Content-Transfer-Encoding: 8bit\r\n");
-                        do_send(&S, "Message-Id: <%lld.%lu@%s>\r\n", (long long)time(NULL), random(), S.localhost);
+                        do_send(&S, "Message-Id: <%lld.%lu@%s>\r\n", (long long)Time_now(), random(), S.localhost);
                         do_send(&S, "\r\n");
                         do_send(&S, "%s\r\n", m->message);
                         do_send(&S, ".\r\n");
@@ -296,7 +295,7 @@ int sendmail(Mail_T mail) {
         }
         ELSE
         {
-                failed = TRUE;
+                failed = true;
                 LogError("Sendmail: %s\n", Exception_frame.message);
         }
         FINALLY

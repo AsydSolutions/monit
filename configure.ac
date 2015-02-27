@@ -6,7 +6,7 @@ AC_PREREQ([2.53])
 # Note: in  case of beta subversion, use underscore "_" rather then dash "-"
 # since RPM doesn't allow dash in Version
 # Example: 5.0_beta2
-AC_INIT([monit], [5.11], [monit-general@nongnu.org])
+AC_INIT([monit], [5.12], [monit-general@nongnu.org])
 AC_CONFIG_AUX_DIR(config)
 AC_CONFIG_MACRO_DIR([m4])
 AM_INIT_AUTOMAKE
@@ -126,6 +126,7 @@ AC_CHECK_HEADERS([ \
 	limits.h \
 	loadavg.h \
 	locale.h \
+        mach/boolean.h \
         mach/host_info.h \
         mach/mach.h \
         mach/mach_host.h \
@@ -168,6 +169,7 @@ AC_CHECK_HEADERS([ \
 	sys/pstat.h \
 	sys/queue.h \
 	sys/resource.h \
+	sys/sched.h \
 	sys/statfs.h \
 	sys/statvfs.h \
 	sys/sysinfo.h \
@@ -184,6 +186,7 @@ AC_CHECK_HEADERS([ \
 	unistd.h \
         uvm/uvm.h \
         uvm/uvm_extern.h \
+        uvm/uvm_param.h \
         vm/vm.h \
 	])
 
@@ -236,6 +239,20 @@ AC_CHECK_HEADERS([ \
          #endif
          #if HAVE_NETINET_IP_H
          #include <netinet/ip.h>
+         #endif
+        ])
+
+AC_CHECK_HEADERS([ \
+	netinet/icmp6.h \
+        ],
+        [],
+        [],
+        [
+         #ifdef HAVE_SYS_TYPES_H
+         #include <sys/types.h>
+         #endif
+         #if HAVE_NETINET_IP_H
+         #include <netinet/in.h>
          #endif
         ])
 
@@ -321,7 +338,27 @@ AC_CHECK_HEADERS([ \
          #endif
         ])
 
-# Check for types.
+
+# ------------------------------------------------------------------------
+# Types
+# ------------------------------------------------------------------------
+
+AC_CHECK_TYPES([boolean_t], [], [],
+        [
+         #ifdef HAVE_SYS_TYPES_H
+         #include <sys/types.h>
+         #endif
+         #ifdef HAVE_MACH_BOOLEAN_H
+         #include <mach/boolean.h>
+         #endif
+         #ifdef HAVE_UVM_UVM_PARAM_H
+         #include <uvm/uvm_param.h>
+         #endif
+         #ifdef HAVE_VM_VM_H
+         #include <vm/vm.h>
+         #endif
+        ])
+
 AC_TYPE_MODE_T
 AC_TYPE_PID_T
 AC_TYPE_SIZE_T
@@ -351,16 +388,6 @@ AC_CHECK_FUNCS(vsyslog)
 AC_CHECK_FUNCS(backtrace)
 AC_CHECK_FUNCS(getloadavg)
 AC_CHECK_FUNCS(getopt_long)
-
-# Check for SOL_IP
-AC_MSG_CHECKING(for SOL_IP)
-AC_TRY_COMPILE([
-	#include <netdb.h>
-	#include <sys/socket.h>], 
-	[int level = SOL_IP;], 
-	[AC_MSG_RESULT(yes)
-	AC_DEFINE([HAVE_SOL_IP], [1], [Define to 1 if SOL_IP is defined.])], 
-	[AC_MSG_RESULT(no)])
 
 AC_MSG_CHECKING(for va_copy)
 AC_TRY_LINK([
@@ -403,6 +430,34 @@ fi
 
 
 # ------------------------------------------------------------------------
+# IPv6 Support
+# ------------------------------------------------------------------------
+
+AC_MSG_CHECKING(for IPv6 support)
+AC_CACHE_VAL(ac_cv_ipv6,
+        AC_TRY_RUN([
+        #include <sys/types.h>
+        #include <sys/socket.h>
+        #include <netinet/in.h>
+        /* Make sure the definitions for AF_INET6 and struct sockaddr_in6
+         * are defined, and that we can actually create an IPv6 TCP socket.*/
+        main()
+        {
+                int fd;
+                struct sockaddr_in6 foo;
+                fd = socket(AF_INET6, SOCK_STREAM, 0);
+                exit(fd >= 0 ? 0 : 1);
+        }],
+        ac_cv_ipv6=yes,
+        ac_cv_ipv6=no,
+        ac_cv_ipv6=no))
+AC_MSG_RESULT($ac_cv_ipv6)
+if test $ac_cv_ipv6 = yes ; then
+        AC_DEFINE([IPV6], 1, [Define to 1 if the system supports IPv6])
+fi
+
+
+# ------------------------------------------------------------------------
 # Paths 
 # ------------------------------------------------------------------------
 
@@ -428,6 +483,7 @@ then
 elif test -f "/etc/mnttab"; then
   AC_DEFINE([HAVE_MNTTAB], 1, [Define to 1 if you have /etc/mnttab])
 fi
+
 
 # ------------------------------------------------------------------------
 # Architecture/OS detection
@@ -519,6 +575,7 @@ else
    ARCH="UNKNOWN"
 fi
 AC_SUBST(ARCH)
+
 
 # ------------------------------------------------------------------------
 # Resource code

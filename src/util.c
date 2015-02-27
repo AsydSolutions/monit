@@ -44,17 +44,6 @@
 #include <signal.h>
 #endif
 
-#if TIME_WITH_SYS_TIME
-# include <sys/time.h>
-# include <time.h>
-#else
-# if HAVE_SYS_TIME_H
-#  include <sys/time.h>
-# else
-#  include <time.h>
-# endif
-#endif
-
 #ifdef HAVE_STDLIB_H
 #include <stdlib.h>
 #endif
@@ -129,6 +118,10 @@
 #include "process.h"
 #include "event.h"
 #include "state.h"
+
+// libmonit
+#include "io/File.h"
+#include "system/Time.h"
 
 
 struct ad_user {
@@ -312,7 +305,7 @@ static int PAMquery(int num_msg, const struct pam_message **msg, struct pam_resp
         struct pam_response *response;
 
         /* Sanity checking */
-        if (!msg || !resp || !user )
+        if (! msg || ! resp || ! user )
                 return PAM_CONV_ERR;
 
         response = CALLOC(sizeof(struct pam_response), num_msg);
@@ -353,7 +346,7 @@ static int PAMquery(int num_msg, const struct pam_message **msg, struct pam_resp
 /**
  * Validate login/passwd via PAM service "monit"
  */
-static int PAMcheckPasswd(const char *login, const char *passwd) {
+static boolean_t PAMcheckPasswd(const char *login, const char *passwd) {
         int rv;
         pam_handle_t *pamh = NULL;
         struct ad_user user_info = {
@@ -367,7 +360,7 @@ static int PAMcheckPasswd(const char *login, const char *passwd) {
 
         if ((rv = pam_start("monit", login, &conv, &pamh) != PAM_SUCCESS)) {
                 DEBUG("PAM authentication start failed -- %d\n", rv);
-                return FALSE;
+                return false;
         }
 
         rv = pam_authenticate(pamh, PAM_SILENT);
@@ -375,7 +368,7 @@ static int PAMcheckPasswd(const char *login, const char *passwd) {
         if (pam_end(pamh, rv) != PAM_SUCCESS)
                 pamh = NULL;
 
-        return(rv == PAM_SUCCESS ? TRUE : FALSE);
+        return rv == PAM_SUCCESS ? true : false;
 }
 
 
@@ -383,16 +376,16 @@ static int PAMcheckPasswd(const char *login, const char *passwd) {
  * Check whether the user is member of allowed groups
  */
 static Auth_T PAMcheckUserGroup(const char *uname) {
-        Auth_T c = Run.credentials;
+        Auth_T c = Run.httpd.credentials;
         struct passwd *pwd = NULL;
         struct group  *grp = NULL;
 
         ASSERT(uname);
 
-        if (!(pwd = getpwnam(uname)))
+        if (! (pwd = getpwnam(uname)))
                 return NULL;
 
-        if (!(grp = getgrgid(pwd->pw_gid)))
+        if (! (grp = getgrgid(pwd->pw_gid)))
                 return NULL;
 
         while (c) {
@@ -434,27 +427,27 @@ char *Util_replaceString(char **src, const char *old, const char *new) {
         i = Util_countWords(*src, old);
         d = strlen(new)-strlen(old);
 
-        if (i==0)
+        if (i == 0)
                 return *src;
-        if (d>0)
-                d*= i;
+        if (d > 0)
+                d *= i;
         else
                 d = 0;
 
         {
                 char *p, *q;
                 size_t l = strlen(old);
-                char *buf = CALLOC(sizeof(char), strlen(*src)+d+1);
+                char *buf = CALLOC(sizeof(char), strlen(*src) + d + 1);
 
                 q = *src;
                 *buf = 0;
 
-                while((p = strstr(q, old))) {
+                while ((p = strstr(q, old))) {
 
                         *p = '\0';
                         strcat(buf, q);
                         strcat(buf, new);
-                        p+= l;
+                        p += l;
                         q = p;
 
                 }
@@ -473,7 +466,7 @@ int Util_countWords(char *s, const char *word) {
 
         ASSERT(s && word);
 
-        while((p = strstr(p, word))) { i++;  p++; }
+        while ((p = strstr(p, word))) { i++;  p++; }
         return i;
 }
 
@@ -484,61 +477,61 @@ void Util_handleEscapes(char *buf) {
 
         ASSERT(buf);
 
-        for (editpos=insertpos=0; *(buf+editpos)!='\0'; editpos++, insertpos++) {
-                if (*(buf+editpos) == '\\' ) {
-                        switch (*(buf+editpos+1)) {
+        for (editpos = insertpos = 0; *(buf + editpos) != '\0'; editpos++, insertpos++) {
+                if (*(buf + editpos) == '\\' ) {
+                        switch (*(buf + editpos + 1)) {
                                 case 'n':
-                                        *(buf+insertpos)='\n';
+                                        *(buf + insertpos) = '\n';
                                         editpos++;
                                         break;
 
                                 case 't':
-                                        *(buf+insertpos)='\t';
+                                        *(buf + insertpos) = '\t';
                                         editpos++;
                                         break;
 
                                 case 'r':
-                                        *(buf+insertpos)='\r';
+                                        *(buf + insertpos) = '\r';
                                         editpos++;
                                         break;
 
                                 case ' ':
-                                        *(buf+insertpos)=' ';
+                                        *(buf + insertpos) = ' ';
                                         editpos++;
                                         break;
 
                                 case '0':
-                                        if (*(buf+editpos+2)=='x') {
-                                                if ((*(buf+editpos+3)=='0' && *(buf+editpos+4)=='0')) {
+                                        if (*(buf + editpos+2) == 'x') {
+                                                if ((*(buf + editpos + 3) == '0' && *(buf + editpos + 4) == '0')) {
                                                         /* Don't swap \0x00 with 0 to avoid truncating the string.
                                                          Currently the only place where we support sending of 0 bytes
                                                          is in check_generic(). The \0x00 -> 0 byte swap is performed
                                                          there and in-place.
                                                          */
-                                                        *(buf+insertpos)=*(buf+editpos);
+                                                        *(buf + insertpos) = *(buf+editpos);
                                                 } else {
-                                                        *(buf+insertpos)=x2c(&buf[editpos+3]);
-                                                        editpos+=4;
+                                                        *(buf + insertpos) = x2c(&buf[editpos + 3]);
+                                                        editpos += 4;
                                                 }
                                         }
                                         break;
 
                                 case '\\':
-                                        *(buf+insertpos)='\\';
+                                        *(buf + insertpos) = '\\';
                                         editpos++;
                                         break;
 
                                 default:
-                                        *(buf+insertpos)=*(buf+editpos);
+                                        *(buf + insertpos) = *(buf + editpos);
 
                         }
 
                 } else {
-                        *(buf+insertpos)=*(buf+editpos);
+                        *(buf + insertpos) = *(buf + editpos);
                 }
 
         }
-        *(buf+insertpos)='\0';
+        *(buf + insertpos) = '\0';
 }
 
 
@@ -548,26 +541,26 @@ int Util_handle0Escapes(char *buf) {
 
         ASSERT(buf);
 
-        for (editpos=insertpos=0; *(buf+editpos)!='\0'; editpos++, insertpos++) {
-                if (*(buf+editpos) == '\\' ) {
-                        switch (*(buf+editpos+1)) {
+        for (editpos = insertpos = 0; *(buf + editpos) != '\0'; editpos++, insertpos++) {
+                if (*(buf + editpos) == '\\' ) {
+                        switch (*(buf + editpos + 1)) {
                                 case '0':
-                                        if (*(buf+editpos+2)=='x') {
-                                                *(buf+insertpos)=x2c(&buf[editpos+3]);
-                                                editpos+=4;
+                                        if (*(buf + editpos + 2) == 'x') {
+                                                *(buf + insertpos) = x2c(&buf[editpos+3]);
+                                                editpos += 4;
                                         }
                                         break;
 
                                 default:
-                                        *(buf+insertpos)=*(buf+editpos);
+                                        *(buf + insertpos) = *(buf + editpos);
 
                         }
 
                 } else {
-                        *(buf+insertpos)=*(buf+editpos);
+                        *(buf + insertpos) = *(buf + editpos);
                 }
         }
-        *(buf+insertpos)='\0';
+        *(buf + insertpos) = '\0';
         return insertpos;
 }
 
@@ -586,7 +579,7 @@ char *Util_digest2Bytes(unsigned char *digest, int mdlen, MD_T result) {
 }
 
 
-int Util_getStreamDigests(FILE *stream, void *sha1_resblock, void *md5_resblock) {
+boolean_t Util_getStreamDigests(FILE *stream, void *sha1_resblock, void *md5_resblock) {
 #define HASHBLOCKSIZE 4096
         md5_context_t ctx_md5;
         sha1_context_t ctx_sha1;
@@ -614,7 +607,7 @@ int Util_getStreamDigests(FILE *stream, void *sha1_resblock, void *md5_resblock)
                         if (n == 0) {
                                 /* Check for the error flag IFF N == 0, so that we don't exit the loop after a partial read due to e.g., EAGAIN or EWOULDBLOCK */
                                 if (ferror(stream))
-                                        return FALSE;
+                                        return false;
                                 goto process_partial_block;
                         }
 
@@ -643,7 +636,7 @@ process_partial_block:
                 md5_finish(&ctx_md5, md5_resblock);
         if (sha1_resblock)
                 sha1_finish(&ctx_sha1, sha1_resblock);
-        return TRUE;
+        return true;
 }
 
 
@@ -661,7 +654,7 @@ void Util_printHash(char *file) {
 }
 
 
-int Util_getChecksum(char *file, int hashtype, char *buf, int bufsize) {
+boolean_t Util_getChecksum(char *file, Hash_Type hashtype, char *buf, int bufsize) {
         int hashlength = 16;
 
         ASSERT(file);
@@ -669,29 +662,31 @@ int Util_getChecksum(char *file, int hashtype, char *buf, int bufsize) {
         ASSERT(bufsize >= sizeof(MD_T));
 
         switch (hashtype) {
-                case HASH_MD5:
+                case Hash_Md5:
                         hashlength = 16;
                         break;
-                case HASH_SHA1:
+                case Hash_Sha1:
                         hashlength = 20;
                         break;
                 default:
                         LogError("checksum: invalid hash type: 0x%x\n", hashtype);
-                        return FALSE;
+                        return false;
         }
 
-        if (file_isFile(file)) {
+        if (File_isFile(file)) {
                 FILE *f = fopen(file, "r");
                 if (f) {
-                        int fresult = FALSE;
+                        boolean_t fresult = false;
                         MD_T sum;
 
                         switch (hashtype) {
-                                case HASH_MD5:
+                                case Hash_Md5:
                                         fresult = Util_getStreamDigests(f, NULL, sum);
                                         break;
-                                case HASH_SHA1:
+                                case Hash_Sha1:
                                         fresult = Util_getStreamDigests(f, sum, NULL);
+                                        break;
+                                default:
                                         break;
                         }
 
@@ -700,17 +695,17 @@ int Util_getChecksum(char *file, int hashtype, char *buf, int bufsize) {
 
                         if (! fresult) {
                                 LogError("checksum: file %s stream error (0x%x)\n", file, fresult);
-                                return FALSE;
+                                return false;
                         }
 
                         Util_digest2Bytes((unsigned char *)sum, hashlength, buf);
-                        return TRUE;
+                        return true;
 
                 } else
                         LogError("checksum: failed to open file %s -- %s\n", file, STRERROR);
         } else
                 LogError("checksum: file %s is not regular file\n", file);
-        return FALSE;
+        return false;
 }
 
 
@@ -770,14 +765,15 @@ Service_T Util_getService(const char *name) {
 int Util_getNumberOfServices() {
         int i = 0;
         Service_T s;
-        for (s = servicelist; s; s = s->next) i+=1;
+        for (s = servicelist; s; s = s->next)
+                i += 1;
         return i;
 }
 
 
-int Util_existService(const char *name) {
+boolean_t Util_existService(const char *name) {
         ASSERT(name);
-        return Util_getService(name)?TRUE:FALSE;
+        return Util_getService(name) ? true : false;
 }
 
 
@@ -788,11 +784,11 @@ void Util_printRunList() {
         printf(" %-18s = %s\n", "Pid file", is_str_defined(Run.pidfile));
         printf(" %-18s = %s\n", "Id file", is_str_defined(Run.idfile));
         printf(" %-18s = %s\n", "State file", is_str_defined(Run.statefile));
-        printf(" %-18s = %s\n", "Debug", Run.debug?"True":"False");
-        printf(" %-18s = %s\n", "Log", Run.dolog?"True":"False");
-        printf(" %-18s = %s\n", "Use syslog", Run.use_syslog?"True":"False");
-        printf(" %-18s = %s\n", "Is Daemon", Run.isdaemon?"True":"False");
-        printf(" %-18s = %s\n", "Use process engine", Run.doprocess?"True":"False");
+        printf(" %-18s = %s\n", "Debug", Run.debug ? "True" : "False");
+        printf(" %-18s = %s\n", "Log", Run.dolog ? "True" : "False");
+        printf(" %-18s = %s\n", "Use syslog", Run.use_syslog ? "True" : "False");
+        printf(" %-18s = %s\n", "Is Daemon", Run.isdaemon ? "True" : "False");
+        printf(" %-18s = %s\n", "Use process engine", Run.doprocess ? "True" : "False");
         printf(" %-18s = %d seconds with start delay %d seconds\n", "Poll time", Run.polltime, Run.startdelay);
         printf(" %-18s = %d bytes\n", "Expect buffer", Run.expectbuffer);
 
@@ -817,10 +813,10 @@ void Util_printRunList() {
                                c->timeout / 1000,
                                (c->ssl.use_ssl && c->ssl.version) ? " ssl version " : "",
                                (c->ssl.use_ssl && c->ssl.version) ? sslnames[c->ssl.version] : "",
-                               c->ssl.certmd5?" server cert md5 sum ":"",
-                               c->ssl.certmd5?c->ssl.certmd5:"",
-                               c->url->user?" using credentials":"",
-                               c->next?",\n                    = ":"");
+                               c->ssl.certmd5 ? " server cert md5 sum " : "",
+                               c->ssl.certmd5 ? c->ssl.certmd5 : "",
+                               c->url->user ? " using credentials" : "",
+                               c->next ? ",\n                    = " : "");
                 }
                 if (! Run.dommonitcredentials)
                         printf("\n                      register without credentials");
@@ -834,8 +830,8 @@ void Util_printRunList() {
                         printf("%s:%d%s%s",
                                mta->host,
                                mta->port,
-                               mta->ssl.use_ssl?"(ssl)":"",
-                               mta->next?", ":" ");
+                               mta->ssl.use_ssl ? "(ssl)" : "",
+                               mta->next ? ", " : " ");
                 printf("with timeout %d seconds", Run.mailserver_timeout/1000);
                 if (Run.mail_hostname)
                         printf(" using '%s' as my hostname", Run.mail_hostname);
@@ -843,50 +839,37 @@ void Util_printRunList() {
         }
 
         printf(" %-18s = %s\n", "Mail from", is_str_defined(Run.MailFormat.from));
-        printf(" %-18s = %s\n", "Mail subject",
-               is_str_defined(Run.MailFormat.subject));
+        printf(" %-18s = %s\n", "Mail subject", is_str_defined(Run.MailFormat.subject));
         printf(" %-18s = %-.20s%s\n", "Mail message",
-               Run.MailFormat.message?
-               Run.MailFormat.message:"(not defined)",
-               Run.MailFormat.message?"..(truncated)":"");
+               Run.MailFormat.message ? Run.MailFormat.message : "(not defined)",
+               Run.MailFormat.message ? "..(truncated)" : "");
 
-        printf(" %-18s = %s\n", "Start monit httpd", Run.dohttpd?"True":"False");
+        printf(" %-18s = %s\n", "Start monit httpd", (Run.httpd.flags & Httpd_Net || Run.httpd.flags & Httpd_Unix) ? "True" : "False");
 
-        if (Run.dohttpd) {
+        if (Run.httpd.flags & Httpd_Net || Run.httpd.flags & Httpd_Unix) {
 
-                printf(" %-18s = %s\n", "httpd bind address",
-                       Run.bind_addr?Run.bind_addr:"Any/All");
-                printf(" %-18s = %d\n", "httpd portnumber", Run.httpdport);
-                printf(" %-18s = %s\n", "httpd signature", Run.httpdsig?"True":"False");
-                printf(" %-18s = %s\n", "Use ssl encryption", Run.httpdssl?"True":"False");
-
-                if (Run.httpdssl) {
-
-                        printf(" %-18s = %s\n", "PEM key/cert file", Run.httpsslpem);
-
-                        if (Run.httpsslclientpem!=NULL) {
-                                printf(" %-18s = %s\n", "Client cert file", Run.httpsslclientpem);
-                        } else {
-                                printf(" %-18s = %s\n", "Client cert file", "None");
-                        }
-
-                        printf(" %-18s = %s\n", "Allow self certs",
-                               Run.allowselfcert?"True":"False");
-
+                if (Run.httpd.flags & Httpd_Net) {
+                        printf(" %-18s = %s\n", "httpd bind address", Run.httpd.socket.net.address ? Run.httpd.socket.net.address : "Any/All");
+                        printf(" %-18s = %d\n", "httpd portnumber", Run.httpd.socket.net.port);
+                        printf(" %-18s = %s\n", "httpd ssl", Run.httpd.flags & Httpd_Ssl ? "Enabled" : "Disabled");
+                } else if (Run.httpd.flags & Httpd_Unix) {
+                        printf(" %-18s = %s\n", "httpd unix socket", Run.httpd.socket.unix.path);
+                }
+                printf(" %-18s = %s\n", "httpd signature", Run.httpd.flags & Httpd_Signature ? "Enabled" : "Disabled");
+                if (Run.httpd.flags & Httpd_Ssl) {
+                        printf(" %-18s = %s\n", "PEM key/cert file", Run.httpd.socket.net.ssl.pem);
+                        if (Run.httpd.socket.net.ssl.clientpem)
+                                printf(" %-18s = %s\n", "Client cert file", Run.httpd.socket.net.ssl.clientpem);
+                        printf(" %-18s = %s\n", "Allow self certs", (Run.httpd.flags & Httpd_AllowSelfSignedCertificates) ? "True" : "False");
                 }
 
                 printf(" %-18s = %s\n", "httpd auth. style",
-                       (Run.credentials!=NULL)&&has_hosts_allow()?
-                       "Basic Authentication and Host/Net allow list":
-                       (Run.credentials!=NULL)?"Basic Authentication":
-                       has_hosts_allow()?"Host/Net allow list":
-                       "No authentication!");
+                       Run.httpd.credentials && Engine_hasHostsAllow() ? "Basic Authentication and Host/Net allow list" : Run.httpd.credentials ? "Basic Authentication" : Engine_hasHostsAllow() ? "Host/Net allow list" : "No authentication!");
 
         }
 
         {
-                Mail_T list;
-                for (list = Run.maillist; list; list = list->next) {
+                for (Mail_T list = Run.maillist; list; list = list->next) {
                         printf(" %-18s = %s\n", "Alert mail to", is_str_defined(list->to));
                         printf("   %-16s = ", "Alert on");
                         printevents(list->events);
@@ -902,7 +885,7 @@ void Util_printRunList() {
 void Util_printService(Service_T s) {
         ASSERT(s);
 
-        int sgheader = FALSE;
+        boolean_t sgheader = false;
         char buffer[STRLEN];
         StringBuffer_T buf = StringBuffer_create(STRLEN);
 
@@ -910,10 +893,10 @@ void Util_printService(Service_T s) {
 
         for (ServiceGroup_T o = servicegrouplist; o; o = o->next) {
                 for (ServiceGroupMember_T om = o->members; om; om = om->next) {
-                        if (! strcasecmp(om->name, s->name)) {
+                        if (IS(om->name, s->name)) {
                                 if (! sgheader) {
                                         printf(" %-20s = %s", "Group", o->name);
-                                        sgheader = TRUE;
+                                        sgheader = true;
                                 } else
                                         printf(", %s", o->name);
                         }
@@ -922,16 +905,16 @@ void Util_printService(Service_T s) {
         if (sgheader)
                 printf("\n");
 
-        if (s->type == TYPE_PROCESS) {
+        if (s->type == Service_Process) {
                 if (s->matchlist)
                         printf(" %-20s = %s\n", "Match", s->path);
                 else
                         printf(" %-20s = %s\n", "Pid file", s->path);
-        } else if (s->type == TYPE_HOST) {
+        } else if (s->type == Service_Host) {
                 printf(" %-20s = %s\n", "Address", s->path);
-        } else if (s->type == TYPE_NET) {
+        } else if (s->type == Service_Net) {
                 printf(" %-20s = %s\n", "Interface", s->path);
-        } else if (s->type != TYPE_SYSTEM) {
+        } else if (s->type != Service_System) {
                 printf(" %-20s = %s\n", "Path", s->path);
         }
         printf(" %-20s = %s\n", "Monitoring mode", modenames[s->mode]);
@@ -971,9 +954,10 @@ void Util_printService(Service_T s) {
                 printf(" timeout %d second(s)", s->restart->timeout);
                 printf("\n");
         }
-        if (s->type != TYPE_SYSTEM && s->type != TYPE_PROGRAM && s->type != TYPE_NET) {
+
+        for (Nonexist_T o = s->nonexistlist; o; o = o->next) {
                 StringBuffer_clear(buf);
-                printf(" %-20s = %s\n", "Existence", StringBuffer_toString(Util_printRule(buf, s->action_NONEXIST, "if does not exist")));
+                printf(" %-20s = %s\n", "Existence", StringBuffer_toString(Util_printRule(buf, o->action, "if does not exist")));
         }
 
         for (Dependant_T o = s->dependantlist; o; o = o->next)
@@ -990,12 +974,12 @@ void Util_printService(Service_T s) {
                 printf(" %-20s = %s\n", "PPid", StringBuffer_toString(Util_printRule(buf, o->action, "if changed")));
         }
 
-        if (s->type == TYPE_FILESYSTEM) {
+        for (Fsflag_T o = s->fsflaglist; o; o = o->next) {
                 StringBuffer_clear(buf);
-                printf(" %-20s = %s\n", "Filesystem flags", StringBuffer_toString(Util_printRule(buf, s->action_FSFLAG, "if changed")));
+                printf(" %-20s = %s\n", "Filesystem flags", StringBuffer_toString(Util_printRule(buf, o->action, "if changed")));
         }
 
-        if (s->type == TYPE_PROGRAM) {
+        if (s->type == Service_Program) {
                 printf(" %-20s = ", "Program timeout");
                 printf("terminate the program if not finished within %d seconds\n", s->program->timeout);
                 for (Status_T o = s->statuslist; o; o = o->next) {
@@ -1010,17 +994,23 @@ void Util_printService(Service_T s) {
         if (s->checksum && s->checksum->action) {
                 StringBuffer_clear(buf);
                 printf(" %-20s = %s\n", "Checksum",
-                        s->checksum->test_changes
-                        ?
-                        StringBuffer_toString(Util_printRule(buf, s->checksum->action, "if changed %s", checksumnames[s->checksum->type]))
-                        :
-                        StringBuffer_toString(Util_printRule(buf, s->checksum->action, "if failed %s(%s)", s->checksum->hash, checksumnames[s->checksum->type]))
-                );
+                       s->checksum->test_changes
+                       ?
+                       StringBuffer_toString(Util_printRule(buf, s->checksum->action, "if changed %s", checksumnames[s->checksum->type]))
+                       :
+                       StringBuffer_toString(Util_printRule(buf, s->checksum->action, "if failed %s(%s)", s->checksum->hash, checksumnames[s->checksum->type]))
+                       );
         }
 
         if (s->perm && s->perm->action) {
                 StringBuffer_clear(buf);
-                printf(" %-20s = %s\n", "Permission", StringBuffer_toString(Util_printRule(buf, s->perm->action, "if failed %04o", s->perm->perm)));
+                printf(" %-20s = %s\n", "Permission",
+                       s->perm->test_changes
+                       ?
+                       StringBuffer_toString(Util_printRule(buf, s->perm->action, "if changed"))
+                       :
+                       StringBuffer_toString(Util_printRule(buf, s->perm->action, "if failed %04o", s->perm->perm))
+                       );
         }
 
         if (s->uid && s->uid->action) {
@@ -1040,66 +1030,67 @@ void Util_printService(Service_T s) {
 
         for (Icmp_T o = s->icmplist; o; o = o->next) {
                 StringBuffer_clear(buf);
-                printf(" %-20s = %s\n", "Ping", StringBuffer_toString(Util_printRule(buf, o->action, "if failed [count %d with timeout %d seconds]", o->count, o->timeout / 1000)));
+                printf(" %-20s = %s\n", "Ping", StringBuffer_toString(Util_printRule(buf, o->action, "if failed count %d with timeout %d seconds", o->count, o->timeout / 1000)));
         }
 
         for (Port_T o = s->portlist; o; o = o->next) {
                 StringBuffer_clear(buf);
-                if (o->family == AF_INET) {
-                        if (o->retry > 1)
-                                printf(" %-20s = %s\n", "Port", StringBuffer_toString(Util_printRule(buf, o->action, "if failed [%s:%d%s [%s via %s] with timeout %d seconds and retry %d times]", o->hostname, o->port, o->request ? o->request : "", o->protocol->name, Util_portTypeDescription(o), o->timeout / 1000, o->retry)));
-                        else
-                                printf(" %-20s = %s\n", "Port", StringBuffer_toString(Util_printRule(buf, o->action, "if failed [%s:%d%s [%s via %s] with timeout %d seconds]", o->hostname, o->port, o->request ? o->request : "", o->protocol->name, Util_portTypeDescription(o), o->timeout / 1000)));
-                        if (o->SSL.certmd5 != NULL)
-                                printf(" %-20s = %s\n", "Server cert md5 sum", o->SSL.certmd5);
-                } else if (o->family == AF_UNIX) {
-                        if (o->retry > 1)
-                                printf(" %-20s = %s\n", "Unix Socket", StringBuffer_toString(Util_printRule(buf, o->action, "if failed [%s [protocol %s] with timeout %d seconds and retry %d times]", o->pathname, o->protocol->name, o->timeout / 1000, o->retry)));
-                        else
-                                printf(" %-20s = %s\n", "Unix Socket", StringBuffer_toString(Util_printRule(buf, o->action, "if failed [%s [protocol %s] with timeout %d seconds]", o->pathname, o->protocol->name, o->timeout / 1000, o->retry)));
-                }
+                if (o->retry > 1)
+                        printf(" %-20s = %s\n", "Port", StringBuffer_toString(Util_printRule(buf, o->action, "if failed [%s]:%d%s type %s protocol %s with timeout %d seconds and retry %d times", o->hostname, o->port, o->request ? o->request : "", Util_portTypeDescription(o), o->protocol->name, o->timeout / 1000, o->retry)));
+                else
+                        printf(" %-20s = %s\n", "Port", StringBuffer_toString(Util_printRule(buf, o->action, "if failed [%s]:%d%s type %s protocol %s with timeout %d seconds", o->hostname, o->port, o->request ? o->request : "", Util_portTypeDescription(o), o->protocol->name, o->timeout / 1000)));
+                if (o->SSL.certmd5 != NULL)
+                        printf(" %-20s = %s\n", "Server cert md5 sum", o->SSL.certmd5);
+        }
+
+        for (Port_T o = s->socketlist; o; o = o->next) {
+                StringBuffer_clear(buf);
+                if (o->retry > 1)
+                        printf(" %-20s = %s\n", "Unix Socket", StringBuffer_toString(Util_printRule(buf, o->action, "if failed %s type %s protocol %s with timeout %d seconds and retry %d times", o->pathname, Util_portTypeDescription(o), o->protocol->name, o->timeout / 1000, o->retry)));
+                else
+                        printf(" %-20s = %s\n", "Unix Socket", StringBuffer_toString(Util_printRule(buf, o->action, "if failed %s type %s protocol %s with timeout %d seconds", o->pathname, Util_portTypeDescription(o), o->protocol->name, o->timeout / 1000, o->retry)));
         }
 
         for (Timestamp_T o = s->timestamplist; o; o = o->next) {
                 StringBuffer_clear(buf);
                 printf(" %-20s = %s\n", "Timestamp",
-                        o->test_changes
-                        ?
-                        StringBuffer_toString(Util_printRule(buf, o->action, "if changed"))
-                        :
-                        StringBuffer_toString(Util_printRule(buf, o->action, "if %s %d second(s)", operatornames[o->operator], o->time))
-                );
+                       o->test_changes
+                       ?
+                       StringBuffer_toString(Util_printRule(buf, o->action, "if changed"))
+                       :
+                       StringBuffer_toString(Util_printRule(buf, o->action, "if %s %d second(s)", operatornames[o->operator], o->time))
+                       );
         }
 
         for (Size_T o = s->sizelist; o; o = o->next) {
                 StringBuffer_clear(buf);
                 printf(" %-20s = %s\n", "Size",
-                        o->test_changes
-                        ?
-                        StringBuffer_toString(Util_printRule(buf, o->action, "if changed"))
-                        :
-                        StringBuffer_toString(Util_printRule(buf, o->action, "if %s %llu byte(s)", operatornames[o->operator], o->size))
-                );
+                       o->test_changes
+                       ?
+                       StringBuffer_toString(Util_printRule(buf, o->action, "if changed"))
+                       :
+                       StringBuffer_toString(Util_printRule(buf, o->action, "if %s %llu byte(s)", operatornames[o->operator], o->size))
+                       );
         }
 
-        for (NetLinkStatus_T o = s->netlinkstatuslist; o; o = o->next) {
+        for (LinkStatus_T o = s->linkstatuslist; o; o = o->next) {
                 StringBuffer_clear(buf);
                 printf(" %-20s = %s\n", "Link status", StringBuffer_toString(Util_printRule(buf, o->action, "if failed")));
         }
 
-        for (NetLinkSpeed_T o = s->netlinkspeedlist; o; o = o->next) {
+        for (LinkSpeed_T o = s->linkspeedlist; o; o = o->next) {
                 StringBuffer_clear(buf);
                 printf(" %-20s = %s\n", "Link capacity", StringBuffer_toString(Util_printRule(buf, o->action, "if changed")));
         }
 
-        for (NetLinkSaturation_T o = s->netlinksaturationlist; o; o = o->next) {
+        for (LinkSaturation_T o = s->linksaturationlist; o; o = o->next) {
                 StringBuffer_clear(buf);
                 printf(" %-20s = %s\n", "Link utilization", StringBuffer_toString(Util_printRule(buf, o->action, "if %s %.1f%%", operatornames[o->operator], o->limit)));
         }
 
         for (Bandwidth_T o = s->uploadbyteslist; o; o = o->next) {
                 StringBuffer_clear(buf);
-                if (o->range == TIME_SECOND) {
+                if (o->range == Time_Second) {
                         printf(" %-20s = %s\n", "Upload bytes", StringBuffer_toString(Util_printRule(buf, o->action, "if %s %s/s", operatornames[o->operator], Str_bytesToSize(o->limit, buffer))));
                 } else {
                         printf(" %-20s = %s\n", "Total upload bytes", StringBuffer_toString(Util_printRule(buf, o->action, "if %s %s in last %d %s(s)", operatornames[o->operator], Str_bytesToSize(o->limit, buffer), o->rangecount, Util_timestr(o->range))));
@@ -1108,7 +1099,7 @@ void Util_printService(Service_T s) {
 
         for (Bandwidth_T o = s->uploadpacketslist; o; o = o->next) {
                 StringBuffer_clear(buf);
-                if (o->range == TIME_SECOND) {
+                if (o->range == Time_Second) {
                         printf(" %-20s = %s\n", "Upload packets", StringBuffer_toString(Util_printRule(buf, o->action, "if %s %lld packets/s", operatornames[o->operator], o->limit)));
                 } else {
                         printf(" %-20s = %s\n", "Total upload packets", StringBuffer_toString(Util_printRule(buf, o->action, "if %s %lld packets in last %d %s(s)", operatornames[o->operator], o->limit, o->rangecount, Util_timestr(o->range))));
@@ -1117,7 +1108,7 @@ void Util_printService(Service_T s) {
 
         for (Bandwidth_T o = s->downloadbyteslist; o; o = o->next) {
                 StringBuffer_clear(buf);
-                if (o->range == TIME_SECOND) {
+                if (o->range == Time_Second) {
                         printf(" %-20s = %s\n", "Download bytes", StringBuffer_toString(Util_printRule(buf, o->action, "if %s %s/s", operatornames[o->operator], Str_bytesToSize(o->limit, buffer))));
                 } else {
                         printf(" %-20s = %s\n", "Total download bytes", StringBuffer_toString(Util_printRule(buf, o->action, "if %s %s in last %d %s(s)", operatornames[o->operator], Str_bytesToSize(o->limit, buffer), o->rangecount, Util_timestr(o->range))));
@@ -1126,7 +1117,7 @@ void Util_printService(Service_T s) {
 
         for (Bandwidth_T o = s->downloadpacketslist; o; o = o->next) {
                 StringBuffer_clear(buf);
-                if (o->range == TIME_SECOND) {
+                if (o->range == Time_Second) {
                         printf(" %-20s = %s\n", "Download packets", StringBuffer_toString(Util_printRule(buf, o->action, "if %s %lld packets/s", operatornames[o->operator], o->limit)));
                 } else {
                         printf(" %-20s = %s\n", "Total downl. packets", StringBuffer_toString(Util_printRule(buf, o->action, "if %s %lld packets in last %d %s(s)", operatornames[o->operator], o->limit, o->rangecount, Util_timestr(o->range))));
@@ -1138,7 +1129,7 @@ void Util_printService(Service_T s) {
                 printf(" %-20s = %s\n", "Uptime", StringBuffer_toString(Util_printRule(buf, o->action, "if %s %llu second(s)", operatornames[o->operator], o->uptime)));
         }
 
-        if (s->type != TYPE_PROCESS) {
+        if (s->type != Service_Process) {
                 for (Match_T o = s->matchignorelist; o; o = o->next) {
                         StringBuffer_clear(buf);
                         printf(" %-20s = %s\n", "Ignore pattern", StringBuffer_toString(Util_printRule(buf, o->action, "if%s match \"%s\"", o->not ? " not" : "", o->match_string)));
@@ -1151,124 +1142,130 @@ void Util_printService(Service_T s) {
 
         for (Filesystem_T o = s->filesystemlist; o; o = o->next) {
                 StringBuffer_clear(buf);
-                if (o->resource == RESOURCE_ID_INODE) {
+                if (o->resource == Resource_Inode) {
                         printf(" %-20s = %s\n", "Inodes usage limit",
-                                o->limit_absolute > -1
-                                ?
-                                StringBuffer_toString(Util_printRule(buf, o->action, "if %s %lld", operatornames[o->operator], o->limit_absolute))
-                                :
-                                StringBuffer_toString(Util_printRule(buf, o->action, "if %s %.1f%%", operatornames[o->operator], o->limit_percent / 10.))
-                        );
-                } else if (o->resource == RESOURCE_ID_SPACE) {
-                        printf(" %-20s = %s\n", "Space usage limit",
-                                o->limit_absolute > -1
-                                ?
-                                StringBuffer_toString(Util_printRule(buf, o->action, "if %s %lld blocks", operatornames[o->operator], o->limit_absolute))
-                                :
-                                StringBuffer_toString(Util_printRule(buf, o->action, "if %s %.1f%%", operatornames[o->operator], o->limit_percent / 10.))
-                        );
+                               o->limit_absolute > -1
+                               ?
+                               StringBuffer_toString(Util_printRule(buf, o->action, "if %s %lld", operatornames[o->operator], o->limit_absolute))
+                               :
+                               StringBuffer_toString(Util_printRule(buf, o->action, "if %s %.1f%%", operatornames[o->operator], o->limit_percent / 10.))
+                               );
+                } else if (o->resource == Resource_Space) {
+                        if (o->limit_absolute > -1) {
+                               if (s->inf->priv.filesystem.f_bsize > 0)
+                                       printf(" %-20s = %s\n", "Space usage limit", StringBuffer_toString(Util_printRule(buf, o->action, "if %s %s", operatornames[o->operator], Str_bytesToSize(o->limit_absolute * s->inf->priv.filesystem.f_bsize, buffer))));
+                                else
+                                       printf(" %-20s = %s\n", "Space usage limit", StringBuffer_toString(Util_printRule(buf, o->action, "if %s %lld blocks", operatornames[o->operator], o->limit_absolute)));
+                        } else {
+                               printf(" %-20s = %s\n", "Space usage limit", StringBuffer_toString(Util_printRule(buf, o->action, "if %s %.1f%%", operatornames[o->operator], o->limit_percent / 10.)));
+                        }
                 }
         }
 
         for (Resource_T o = s->resourcelist; o; o = o->next) {
                 StringBuffer_clear(buf);
                 switch (o->resource_id) {
-                        case RESOURCE_ID_CPU_PERCENT:
+                        case Resource_CpuPercent:
                                 printf(" %-20s = ", "CPU usage limit");
                                 break;
 
-                        case RESOURCE_ID_TOTAL_CPU_PERCENT:
+                        case Resource_CpuPercentTotal:
                                 printf(" %-20s = ", "CPU usage limit (incl. children)");
                                 break;
 
-                        case RESOURCE_ID_CPUUSER:
+                        case Resource_CpuUser:
                                 printf(" %-20s = ", "CPU user limit");
                                 break;
 
-                        case RESOURCE_ID_CPUSYSTEM:
+                        case Resource_CpuSystem:
                                 printf(" %-20s = ", "CPU system limit");
                                 break;
 
-                        case RESOURCE_ID_CPUWAIT:
+                        case Resource_CpuWait:
                                 printf(" %-20s = ", "CPU wait limit");
                                 break;
 
-                        case RESOURCE_ID_MEM_PERCENT:
+                        case Resource_MemoryPercent:
                                 printf(" %-20s = ", "Memory usage limit");
                                 break;
 
-                        case RESOURCE_ID_MEM_KBYTE:
+                        case Resource_MemoryKbyte:
                                 printf(" %-20s = ", "Memory amount limit");
                                 break;
 
-                        case RESOURCE_ID_SWAP_PERCENT:
+                        case Resource_SwapPercent:
                                 printf(" %-20s = ", "Swap usage limit");
                                 break;
 
-                        case RESOURCE_ID_SWAP_KBYTE:
+                        case Resource_SwapKbyte:
                                 printf(" %-20s = ", "Swap amount limit");
                                 break;
 
-                        case RESOURCE_ID_LOAD1:
+                        case Resource_LoadAverage1m:
                                 printf(" %-20s = ", "Load avg. (1min)");
                                 break;
 
-                        case RESOURCE_ID_LOAD5:
+                        case Resource_LoadAverage5m:
                                 printf(" %-20s = ", "Load avg. (5min)");
                                 break;
 
-                        case RESOURCE_ID_LOAD15:
+                        case Resource_LoadAverage15m:
                                 printf(" %-20s = ", "Load avg. (15min)");
                                 break;
 
-                        case RESOURCE_ID_CHILDREN:
+                        case Resource_Children:
                                 printf(" %-20s = ", "Children");
                                 break;
 
-                        case RESOURCE_ID_TOTAL_MEM_KBYTE:
+                        case Resource_MemoryKbyteTotal:
                                 printf(" %-20s = ", "Memory amount limit (incl. children)");
                                 break;
 
-                        case RESOURCE_ID_TOTAL_MEM_PERCENT:
+                        case Resource_MemoryPercentTotal:
                                 printf(" %-20s = ", "Memory usage limit (incl. children)");
+                                break;
+                        default:
                                 break;
                 }
                 switch (o->resource_id) {
-                        case RESOURCE_ID_CPU_PERCENT:
-                        case RESOURCE_ID_TOTAL_CPU_PERCENT:
-                        case RESOURCE_ID_TOTAL_MEM_PERCENT:
-                        case RESOURCE_ID_CPUUSER:
-                        case RESOURCE_ID_CPUSYSTEM:
-                        case RESOURCE_ID_CPUWAIT:
-                        case RESOURCE_ID_MEM_PERCENT:
-                        case RESOURCE_ID_SWAP_PERCENT:
+                        case Resource_CpuPercent:
+                        case Resource_CpuPercentTotal:
+                        case Resource_MemoryPercentTotal:
+                        case Resource_CpuUser:
+                        case Resource_CpuSystem:
+                        case Resource_CpuWait:
+                        case Resource_MemoryPercent:
+                        case Resource_SwapPercent:
                                 printf("%s", StringBuffer_toString(Util_printRule(buf, o->action, "if %s %.1f%%", operatornames[o->operator], o->limit / 10.0)));
                                 break;
 
-                        case RESOURCE_ID_MEM_KBYTE:
-                        case RESOURCE_ID_SWAP_KBYTE:
-                        case RESOURCE_ID_TOTAL_MEM_KBYTE:
+                        case Resource_MemoryKbyte:
+                        case Resource_SwapKbyte:
+                        case Resource_MemoryKbyteTotal:
                                 printf("%s", StringBuffer_toString(Util_printRule(buf, o->action, "if %s %s", operatornames[o->operator], Str_bytesToSize(o->limit * 1024., buffer))));
                                 break;
 
-                        case RESOURCE_ID_LOAD1:
-                        case RESOURCE_ID_LOAD5:
-                        case RESOURCE_ID_LOAD15:
+                        case Resource_LoadAverage1m:
+                        case Resource_LoadAverage5m:
+                        case Resource_LoadAverage15m:
                                 printf("%s", StringBuffer_toString(Util_printRule(buf, o->action, "if %s %.1f", operatornames[o->operator], o->limit / 10.0)));
                                 break;
 
-                        case RESOURCE_ID_CHILDREN:
+                        case Resource_Children:
                                 printf("%s", StringBuffer_toString(Util_printRule(buf, o->action, "if %s %ld", operatornames[o->operator], o->limit)));
+                                break;
+
+                        default:
                                 break;
                 }
                 printf("\n");
         }
 
-        if (s->every.type == EVERY_SKIPCYCLES)
+        if (s->every.type == Every_SkipCycles)
                 printf(" %-20s = Check service every %d cycles\n", "Every", s->every.spec.cycle.number);
-        else if (s->every.type == EVERY_CRON)
+        else if (s->every.type == Every_Cron)
                 printf(" %-20s = Check service every %s\n", "Every", s->every.spec.cron);
-        else if (s->every.type == EVERY_NOTINCRON)
+        else if (s->every.type == Every_NotInCron)
                 printf(" %-20s = Don't check service every %s\n", "Every", s->every.spec.cron);
 
         for (ActionRate_T o = s->actionratelist; o; o = o->next) {
@@ -1309,7 +1306,7 @@ char *Util_monitId(char *idfile) {
 
         ASSERT(idfile);
 
-        if (! file_exist(idfile)) {
+        if (! File_exist(idfile)) {
                 md5_context_t ctx;
                 char buf[STRLEN];
                 MD_T digest;
@@ -1319,7 +1316,7 @@ char *Util_monitId(char *idfile) {
                         return NULL;
                 }
                 /* Generate the unique id */
-                snprintf(buf, STRLEN, "%lu%d%lu", (unsigned long)time(NULL), getpid(), random());
+                snprintf(buf, STRLEN, "%lu%d%lu", (unsigned long)Time_now(), getpid(), random());
                 md5_init(&ctx);
                 md5_append(&ctx, (const md5_byte_t *)buf, (int)strlen(buf));
                 md5_finish(&ctx, (md5_byte_t *)digest);
@@ -1327,7 +1324,7 @@ char *Util_monitId(char *idfile) {
                 fprintf(file, "%s", Run.id);
                 LogInfo("Generated unique Monit id %s and stored to '%s'\n", Run.id, idfile);
         } else {
-                if (! file_isFile(idfile)) {
+                if (! File_isFile(idfile)) {
                         LogError("idfile '%s' is not a regular file\n", idfile);
                         return NULL;
                 }
@@ -1335,7 +1332,7 @@ char *Util_monitId(char *idfile) {
                         LogError("Error opening the idfile '%s' -- %s\n", idfile, STRERROR);
                         return NULL;
                 }
-                if (fscanf(file, "%255s", Run.id) != 1) {
+                if (fscanf(file, "%64s", Run.id) != 1) {
                         LogError("Error reading id from file '%s'\n", idfile);
                         if (fclose(file))
                                 LogError("Error closing file '%s' -- %s\n", idfile, STRERROR);
@@ -1355,36 +1352,36 @@ pid_t Util_getPid(char *pidfile) {
 
         ASSERT(pidfile);
 
-        if (! file_exist(pidfile)) {
+        if (! File_exist(pidfile)) {
                 DEBUG("pidfile '%s' does not exist\n", pidfile);
-                return FALSE;
+                return 0;
         }
-        if (! file_isFile(pidfile)) {
+        if (! File_isFile(pidfile)) {
                 LogError("pidfile '%s' is not a regular file\n", pidfile);
-                return FALSE;
+                return 0;
         }
         if ((file = fopen(pidfile,"r")) == (FILE *)NULL) {
                 LogError("Error opening the pidfile '%s' -- %s\n", pidfile, STRERROR);
-                return FALSE;
+                return 0;
         }
         if (fscanf(file, "%d", &pid) != 1) {
                 LogError("Error reading pid from file '%s'\n", pidfile);
                 if (fclose(file))
                         LogError("Error closing file '%s' -- %s\n", pidfile, STRERROR);
-                return FALSE;
+                return 0;
         }
         if (fclose(file))
                 LogError("Error closing file '%s' -- %s\n", pidfile, STRERROR);
 
         if (pid < 0)
-                return(FALSE);
+                return(0);
 
         return (pid_t)pid;
 
 }
 
 
-int Util_isProcessRunning(Service_T s, int refresh) {
+int Util_isProcessRunning(Service_T s, boolean_t refresh) {
         pid_t pid = -1;
         ASSERT(s);
         errno = 0;
@@ -1396,12 +1393,12 @@ int Util_isProcessRunning(Service_T s, int refresh) {
                  * We skip the process matching that cycle however because we don't have process informations - will retry next cycle */
                 if (Run.doprocess) {
                         for (int i = 0; i < ptreesize; i++) {
-                                int found = FALSE;
+                                boolean_t found = false;
                                 if (ptree[i].cmdline) {
 #ifdef HAVE_REGEX_H
-                                        found = regexec(s->matchlist->regex_comp, ptree[i].cmdline, 0, NULL, 0) ? FALSE : TRUE;
+                                        found = regexec(s->matchlist->regex_comp, ptree[i].cmdline, 0, NULL, 0) ? false : true;
 #else
-                                        found = strstr(ptree[i].cmdline, s->matchlist->match_string) ? TRUE : FALSE;
+                                        found = strstr(ptree[i].cmdline, s->matchlist->match_string) ? true : false;
 #endif
                                 }
                                 if (found) {
@@ -1424,20 +1421,6 @@ int Util_isProcessRunning(Service_T s, int refresh) {
         }
         Util_resetInfo(s);
         return 0;
-}
-
-
-time_t Util_getProcessUptime(char *pidfile) {
-        time_t ctime;
-
-        ASSERT(pidfile);
-
-        if ((ctime = file_getTimestamp(pidfile, S_IFREG)) ) {
-                time_t now = time(&now);
-                time_t since = now-ctime;
-                return since;
-        }
-        return (time_t)-1;
 }
 
 
@@ -1469,12 +1452,12 @@ char *Util_getUptime(time_t delta, char *sep) {
 }
 
 
-int Util_isurlsafe(const char *url) {
+boolean_t Util_isurlsafe(const char *url) {
         ASSERT(url && *url);
         for (int i = 0; url[i]; i++)
                 if (urlunsafe[(unsigned char)url[i]])
-                        return FALSE;
-        return TRUE;
+                        return false;
+        return true;
 }
 
 
@@ -1489,8 +1472,8 @@ char *Util_urlEncode(char *url) {
                 p = escaped = ALLOC(i + n + 1);
                 for (; *url; url++, p++) {
                         if (urlunsafe[(unsigned char)(*p = *url)]) {
-                                *p++= '%';
-                                *p++= b2x[(unsigned char)(*url)][0];
+                                *p++ = '%';
+                                *p++ = b2x[(unsigned char)(*url)][0];
                                 *p = b2x[(unsigned char)(*url)][1];
                         }
                 }
@@ -1532,11 +1515,11 @@ char *Util_encodeServiceName(char *name) {
 
 
 char *Util_getBasicAuthHeaderMonit() {
-        Auth_T c = Run.credentials;
+        Auth_T c = Run.httpd.credentials;
 
         /* We find the first cleartext credential for authorization */
         while (c != NULL) {
-                if (c->digesttype == DIGEST_CLEARTEXT && ! c->is_readonly)
+                if (c->digesttype == Digest_Cleartext && ! c->is_readonly)
                         break;
                 c = c->next;
         }
@@ -1552,7 +1535,7 @@ char *Util_getBasicAuthHeader(char *username, char *password) {
         char *auth, *b64;
         char  buf[STRLEN];
 
-        if (!username)
+        if (! username)
                 return NULL;
 
         snprintf(buf, STRLEN, "%s:%s", username, password ? password : "");
@@ -1560,7 +1543,7 @@ char *Util_getBasicAuthHeader(char *username, char *password) {
                 LogError("Failed to base64 encode authentication header\n");
                 return NULL;
         }
-        auth = CALLOC(sizeof(char), STRLEN+1);
+        auth = CALLOC(sizeof(char), STRLEN + 1);
         snprintf(auth, STRLEN, "Authorization: Basic %s\r\n", b64);
         FREE(b64);
         return auth;
@@ -1591,7 +1574,7 @@ void Util_closeFds() {
 
 Auth_T Util_getUserCredentials(char *uname) {
         /* check allowed user names */
-        for (Auth_T c = Run.credentials; c; c = c->next)
+        for (Auth_T c = Run.httpd.credentials; c; c = c->next)
                 if (c->uname && IS(c->uname, uname))
                         return c;
 
@@ -1604,17 +1587,17 @@ Auth_T Util_getUserCredentials(char *uname) {
 }
 
 
-int Util_checkCredentials(char *uname, char *outside) {
+boolean_t Util_checkCredentials(char *uname, char *outside) {
         Auth_T c = Util_getUserCredentials(uname);
         char outside_crypt[STRLEN];
         if (c == NULL)
-                return FALSE;
+                return false;
         switch (c->digesttype) {
-                case DIGEST_CLEARTEXT:
+                case Digest_Cleartext:
                         outside_crypt[sizeof(outside_crypt) - 1] = 0;
                         strncpy(outside_crypt, outside, sizeof(outside_crypt) - 1);
                         break;
-                case DIGEST_MD5:
+                case Digest_Md5:
                 {
                         char id[STRLEN];
                         char salt[STRLEN];
@@ -1625,26 +1608,26 @@ int Util_checkCredentials(char *uname, char *outside) {
                          */
                         id[sizeof(id) - 1] = 0;
                         strncpy(id, c->passwd, sizeof(id) - 1);
-                        if (! (temp = strchr(id+1, '$'))) {
+                        if (! (temp = strchr(id + 1, '$'))) {
                                 LogError("Password not in MD5 format.\n");
-                                return FALSE;
+                                return false;
                         }
                         temp += 1;
                         *temp = '\0';
                         salt[sizeof(salt) - 1] = 0;
-                        strncpy(salt, c->passwd+strlen(id), sizeof(salt) - 1);
+                        strncpy(salt, c->passwd + strlen(id), sizeof(salt) - 1);
                         if (! (temp = strchr(salt, '$'))) {
                                 LogError("Password not in MD5 format.\n");
-                                return FALSE;
+                                return false;
                         }
                         *temp = '\0';
                         if (md5_crypt(outside, id, salt, outside_crypt, sizeof(outside_crypt)) == NULL) {
                                 LogError("Cannot generate MD5 digest error.\n");
-                                return FALSE;
+                                return false;
                         }
                         break;
                 }
-                case DIGEST_CRYPT:
+                case Digest_Crypt:
                 {
                         char salt[3];
                         char *temp;
@@ -1655,28 +1638,24 @@ int Util_checkCredentials(char *uname, char *outside) {
                         break;
                 }
 #ifdef HAVE_LIBPAM
-                case DIGEST_PAM:
+                case Digest_Pam:
                         return PAMcheckPasswd(uname, outside);
                         break;
 #endif
                 default:
                         LogError("Unknown password digestion method.\n");
-                        return FALSE;
+                        return false;
         }
 
-        if (strcmp(outside_crypt,c->passwd) == 0)
-                return TRUE;
-        return FALSE;
+        if (Str_cmp(outside_crypt, c->passwd) == 0)
+                return true;
+        return false;
 }
 
 
 void Util_resetInfo(Service_T s) {
-        s->inf->st_mode = 0;
-        s->inf->st_uid = 0;
-        s->inf->st_gid = 0;
-        s->inf->timestamp = 0;
         switch (s->type) {
-                case TYPE_FILESYSTEM:
+                case Service_Filesystem:
                         s->inf->priv.filesystem.f_bsize = 0LL;
                         s->inf->priv.filesystem.f_blocks = 0LL;
                         s->inf->priv.filesystem.f_blocksfree = 0LL;
@@ -1689,14 +1668,33 @@ void Util_resetInfo(Service_T s) {
                         s->inf->priv.filesystem.space_total = 0LL;
                         s->inf->priv.filesystem._flags = -1;
                         s->inf->priv.filesystem.flags = -1;
+                        s->inf->priv.filesystem.mode = 0;
+                        s->inf->priv.filesystem.uid = 0;
+                        s->inf->priv.filesystem.gid = 0;
                         break;
-                case TYPE_FILE:
-                        // persistent: st_ino, readpos
-                        s->inf->priv.file.st_size  = 0;
-                        s->inf->priv.file.st_ino_prev = 0;
+                case Service_File:
+                        // persistent: st_inode, readpos
+                        s->inf->priv.file.size  = 0;
+                        s->inf->priv.file.inode_prev = 0;
+                        s->inf->priv.file.mode = 0;
+                        s->inf->priv.file.uid = 0;
+                        s->inf->priv.file.gid = 0;
+                        s->inf->priv.file.timestamp = 0;
                         *s->inf->priv.file.cs_sum = 0;
                         break;
-                case TYPE_PROCESS:
+                case Service_Directory:
+                        s->inf->priv.directory.mode = 0;
+                        s->inf->priv.directory.uid = 0;
+                        s->inf->priv.directory.gid = 0;
+                        s->inf->priv.directory.timestamp = 0;
+                        break;
+                case Service_Fifo:
+                        s->inf->priv.fifo.mode = 0;
+                        s->inf->priv.fifo.uid = 0;
+                        s->inf->priv.fifo.gid = 0;
+                        s->inf->priv.fifo.timestamp = 0;
+                        break;
+                case Service_Process:
                         s->inf->priv.process._pid = -1;
                         s->inf->priv.process._ppid = -1;
                         s->inf->priv.process.pid = -1;
@@ -1704,7 +1702,7 @@ void Util_resetInfo(Service_T s) {
                         s->inf->priv.process.uid = -1;
                         s->inf->priv.process.euid = -1;
                         s->inf->priv.process.gid = -1;
-                        s->inf->priv.process.status_flag = 0;
+                        s->inf->priv.process.zombie = false;
                         s->inf->priv.process.children = 0;
                         s->inf->priv.process.mem_kbyte = 0L;
                         s->inf->priv.process.total_mem_kbyte = 0L;
@@ -1714,9 +1712,9 @@ void Util_resetInfo(Service_T s) {
                         s->inf->priv.process.total_cpu_percent = 0;
                         s->inf->priv.process.uptime = 0;
                         break;
-                case TYPE_NET:
+                case Service_Net:
                         if (s->inf->priv.net.stats)
-                                NetStatistics_reset(s->inf->priv.net.stats);
+                                Link_reset(s->inf->priv.net.stats);
                         break;
                 default:
                         break;
@@ -1724,13 +1722,13 @@ void Util_resetInfo(Service_T s) {
 }
 
 
-int Util_hasServiceStatus(Service_T s) {
-        return((s->monitor & MONITOR_YES) && !(s->error & Event_Nonexist) && !(s->error & Event_Data));
+boolean_t Util_hasServiceStatus(Service_T s) {
+        return((s->monitor & Monitor_Yes) && ! (s->error & Event_Nonexist) && ! (s->error & Event_Data));
 }
 
 
 char *Util_getHTTPHostHeader(Socket_T s, char *hostBuf, int len) {
-        if (socket_get_remote_port(s)==80)
+        if (socket_get_remote_port(s) == 80)
                 snprintf(hostBuf, len, "%s", socket_get_remote_host(s));
         else
                 snprintf(hostBuf, len, "%s:%d", socket_get_remote_host(s), socket_get_remote_port(s));
@@ -1738,64 +1736,64 @@ char *Util_getHTTPHostHeader(Socket_T s, char *hostBuf, int len) {
 }
 
 
-int Util_evalQExpression(Operator_Type operator, long long left, long long right) {
+boolean_t Util_evalQExpression(Operator_Type operator, long long left, long long right) {
         switch (operator) {
                 case Operator_Greater:
                         if (left > right)
-                                return TRUE;
+                                return true;
                         break;
                 case Operator_Less:
                         if (left < right)
-                                return TRUE;
+                                return true;
                         break;
                 case Operator_Equal:
                         if (left == right)
-                                return TRUE;
+                                return true;
                         break;
                 case Operator_NotEqual:
                 case Operator_Changed:
                         if (left != right)
-                                return TRUE;
+                                return true;
                         break;
                 default:
                         LogError("Unknown comparison operator\n");
-                        return FALSE;
+                        return false;
         }
-        return FALSE;
+        return false;
 }
 
 
-int Util_evalDoubleQExpression(Operator_Type operator, double left, double right) {
+boolean_t Util_evalDoubleQExpression(Operator_Type operator, double left, double right) {
         switch (operator) {
                 case Operator_Greater:
                         if (left > right)
-                                return TRUE;
+                                return true;
                         break;
                 case Operator_Less:
                         if (left < right)
-                                return TRUE;
+                                return true;
                         break;
                 case Operator_Equal:
                         if (left == right)
-                                return TRUE;
+                                return true;
                         break;
                 case Operator_NotEqual:
                 case Operator_Changed:
                         if (left != right)
-                                return TRUE;
+                                return true;
                         break;
                 default:
                         LogError("Unknown comparison operator\n");
-                        return FALSE;
+                        return false;
         }
-        return FALSE;
+        return false;
 }
 
 
 void Util_monitorSet(Service_T s) {
         ASSERT(s);
-        if (s->monitor == MONITOR_NOT) {
-                s->monitor = MONITOR_INIT;
+        if (s->monitor == Monitor_Not) {
+                s->monitor = Monitor_Init;
                 DEBUG("'%s' monitoring enabled\n", s->name);
                 State_save();
         }
@@ -1804,13 +1802,13 @@ void Util_monitorSet(Service_T s) {
 
 void Util_monitorUnset(Service_T s) {
         ASSERT(s);
-        if (s->monitor != MONITOR_NOT) {
-                s->monitor = MONITOR_NOT;
+        if (s->monitor != Monitor_Not) {
+                s->monitor = Monitor_Not;
                 DEBUG("'%s' monitoring disabled\n", s->name);
         }
         s->nstart = 0;
         s->ncycle = 0;
-        if (s->every.type == EVERY_SKIPCYCLES)
+        if (s->every.type == Every_SkipCycles)
                 s->every.spec.cycle.counter = 0;
         s->error = Event_Null;
         if (s->eventlist)
@@ -1821,7 +1819,7 @@ void Util_monitorUnset(Service_T s) {
 
 
 int Util_getAction(const char *action) {
-        int i = 1; /* the ACTION_IGNORE has index 0 => we will start on next item */
+        int i = 1; /* the Action_Ignored has index 0 => we will start on next item */
 
         ASSERT(action);
 
@@ -1831,13 +1829,13 @@ int Util_getAction(const char *action) {
                 i++;
         }
         /* the action was not found */
-        return ACTION_IGNORE;
+        return Action_Ignored;
 }
 
 
 StringBuffer_T Util_printAction(Action_T A, StringBuffer_T buf) {
         StringBuffer_append(buf, "%s", actionnames[A->id]);
-        if (A->id == ACTION_EXEC) {
+        if (A->id == Action_Exec) {
                 command_t C = A->exec;
                 for (int i = 0; C->arg[i]; i++)
                         StringBuffer_append(buf, "%s%s", i ? " " : " '", C->arg[i]);
@@ -1846,7 +1844,8 @@ StringBuffer_T Util_printAction(Action_T A, StringBuffer_T buf) {
                         StringBuffer_append(buf, " as uid %d", C->uid);
                 if (C->has_gid)
                         StringBuffer_append(buf, " as gid %d", C->gid);
-                StringBuffer_append(buf, " timeout %d cycle(s)", C->timeout);
+                if (C->timeout)
+                        StringBuffer_append(buf, " timeout %d cycle(s)", C->timeout);
         }
         return buf;
 }
@@ -1878,7 +1877,7 @@ StringBuffer_T Util_printRule(StringBuffer_T buf, EventAction_T action, const ch
         StringBuffer_append(buf, "then ");
         Util_printAction(action->failed, buf);
         // Print the success part only if it's non default action (alert is implicit => skipped for simpler output)
-        if (action->succeeded->id != ACTION_IGNORE && action->succeeded->id != ACTION_ALERT) {
+        if (action->succeeded->id != Action_Ignored && action->succeeded->id != Action_Alert) {
                 StringBuffer_append(buf, " else if succeeded ");
                 Util_printEventratio(action->succeeded, buf);
                 StringBuffer_append(buf, "then ");
@@ -1891,7 +1890,7 @@ StringBuffer_T Util_printRule(StringBuffer_T buf, EventAction_T action, const ch
 char *Util_portTypeDescription(Port_T p) {
         switch (p->type) {
                 case SOCK_STREAM:
-                        return p->SSL.use_ssl?"TCPSSL":"TCP";
+                        return p->SSL.use_ssl ? "TCPSSL" : "TCP";
                 case SOCK_DGRAM:
                         return "UDP";
                 default:
@@ -1901,10 +1900,10 @@ char *Util_portTypeDescription(Port_T p) {
 
 
 char *Util_portDescription(Port_T p, char *buf, int bufsize) {
-        if (p->family == AF_INET)
-                snprintf(buf, STRLEN, "INET[%s:%d%s] via %s", p->hostname, p->port, p->request ? p->request : "", Util_portTypeDescription(p));
-        else if (p->family == AF_UNIX)
-                snprintf(buf, STRLEN, "UNIX[%s]", p->pathname);
+        if (p->family == Socket_Ip || p->family == Socket_Ip4 || p->family == Socket_Ip6)
+                snprintf(buf, STRLEN, "[%s]:%d%s [%s]", p->hostname, p->port, p->request ? p->request : "", Util_portTypeDescription(p));
+        else if (p->family == Socket_Unix)
+                snprintf(buf, STRLEN, "%s", p->pathname);
         else
                 *buf = 0;
         return buf;
@@ -1914,7 +1913,6 @@ char *Util_portDescription(Port_T p, char *buf, int bufsize) {
 int Util_getfqdnhostname(char *buf, unsigned len) {
         int status;
         char hostname[STRLEN];
-        struct addrinfo hints, *info = NULL;
 
         // Set the base hostname
         if (gethostname(hostname, sizeof(hostname))) {
@@ -1924,22 +1922,23 @@ int Util_getfqdnhostname(char *buf, unsigned len) {
         snprintf(buf, len, "%s", hostname);
 
         // Try to look for FQDN hostname
-        memset(&hints, 0, sizeof(hints));
-        hints.ai_family = AF_UNSPEC;
-        hints.ai_socktype = SOCK_STREAM;
-        hints.ai_flags = AI_CANONNAME;
-        if ((status = getaddrinfo(hostname, NULL, &hints, &info))) {
+        struct addrinfo *result, hints = {
+                .ai_family = AF_UNSPEC,
+                .ai_flags = AI_CANONNAME,
+                .ai_socktype = SOCK_STREAM
+        };
+        if ((status = getaddrinfo(hostname, NULL, &hints, &result))) {
                 LogError("Cannot translate '%s' to FQDN name -- %s\n", hostname, status == EAI_SYSTEM ? STRERROR : gai_strerror(status));
         } else {
-                for (struct addrinfo *result = info; result; result = result->ai_next) {
-                        if (Str_startsWith(result->ai_canonname, hostname)) {
-                                snprintf(buf, len, "%s", result->ai_canonname);
+                for (struct addrinfo *r = result; r; r = r->ai_next) {
+                        if (Str_startsWith(r->ai_canonname, hostname)) {
+                                snprintf(buf, len, "%s", r->ai_canonname);
                                 break;
                         }
                 }
         }
-        if (info)
-                freeaddrinfo(info);
+        if (result)
+                freeaddrinfo(result);
         return 0;
 }
 
@@ -1950,11 +1949,11 @@ const char *Util_timestr(int time) {
                 int id;
                 char *description;
         } tt[]= {
-                {TIME_SECOND, "second"},
-                {TIME_MINUTE, "minute"},
-                {TIME_HOUR,   "hour"},
-                {TIME_DAY,    "day"},
-                {TIME_MONTH,  "month"},
+                {Time_Second, "second"},
+                {Time_Minute, "minute"},
+                {Time_Hour,   "hour"},
+                {Time_Day,    "day"},
+                {Time_Month,  "month"},
                 {0}
         };
         do {

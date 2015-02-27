@@ -32,49 +32,49 @@
 
 /**
  *  Check the server for greeting code 200 and then send a QUIT and
- *  check for code 205. If alive return TRUE, else, return FALSE.
+ *  check for code 205. If alive return true, else, return false.
  *
  *  @file
  */
-int check_nntp(Socket_T socket) {
+boolean_t check_nntp(Socket_T socket) {
 
-  int status = 0;
-  char buf[STRLEN];
+        int status = 0;
+        char buf[STRLEN];
 
-  ASSERT(socket);
+        ASSERT(socket);
 
-  if(!socket_readln(socket, buf, sizeof(buf))) {
-    socket_setError(socket, "NNTP: error receiving data -- %s", STRERROR);
-    return FALSE;
-  }
+        if (! socket_readln(socket, buf, sizeof(buf))) {
+                socket_setError(socket, "NNTP: error receiving data -- %s", STRERROR);
+                return false;
+        }
 
-  Str_chomp(buf);
+        Str_chomp(buf);
 
-  sscanf(buf, "%d %*s", &status);
-  if(status != 200) {
-    socket_setError(socket, "NNTP error: %s", buf);
-    return FALSE;
-  }
+        sscanf(buf, "%d %*s", &status);
+        if (status != 200) {
+                socket_setError(socket, "NNTP error: %s", buf);
+                return false;
+        }
 
-  if(socket_print(socket, "QUIT\r\n") < 0) {
-    socket_setError(socket, "NNTP: error sending data -- %s", STRERROR);
-    return FALSE;
-  }
+        if (socket_print(socket, "QUIT\r\n") < 0) {
+                socket_setError(socket, "NNTP: error sending data -- %s", STRERROR);
+                return false;
+        }
 
-  if(!socket_readln(socket, buf, sizeof(buf))) {
-    socket_setError(socket, "NNTP: error receiving data -- %s", STRERROR);
-    return FALSE;
-  }
+        if (! socket_readln(socket, buf, sizeof(buf))) {
+                socket_setError(socket, "NNTP: error receiving data -- %s", STRERROR);
+                return false;
+        }
 
-  Str_chomp(buf);
+        Str_chomp(buf);
 
-  sscanf(buf, "%d %*s", &status);
-  if(status != 205) {
-    socket_setError(socket, "NNTP error: %s", buf);
-    return FALSE;
-  }
+        sscanf(buf, "%d %*s", &status);
+        if (status != 205) {
+                socket_setError(socket, "NNTP error: %s", buf);
+                return false;
+        }
 
-  return TRUE;
+        return true;
 
 }
 

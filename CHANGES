@@ -1,6 +1,98 @@
-                     CHANGES version 5.11
+                     CHANGES version 5.12
 
            This file summarizes changes made since 5.0
+
+Version 5.12
+
+New: Support for testing IPv6 hosts with ping and TCP/UDP connections. Example:
+    check host myhost with address "2001:db8::1234"
+        if failed ping then alert
+        if failed port 80 then alert
+IPv6 is supported also for mailserver and M/Monit with IPv6-enabled.
+Monit HTTP interface listens still on IPv4 only.
+
+New: Support for Monit HTTP interface on unix socket for easier deployment on
+virtualisation platforms which share the IP address for containers, such as Docker.
+Note: Either unixsocket or TCP port can be used - not both at once. Example:
+    set httpd
+        unixsocket /var/run/monit.sock
+        allow myuser:mypassword
+
+New: Support for multiple existence tests (available in the process, file, directory
+and fifo check context):
+    if does not exist then alert
+    if does not exist 3 times in 5 cycles then stop
+
+New: Support for multiple fsflag tests (available in the filesystem check context):
+    if changed fsflags then alert
+    if changed fsflags for 10 cycles then exec "/usr/bin/myscript.sh"
+
+New: Space usage test now tests the free blocks without accounting for reserved
+blocks. Previously Monit computed the space usage by subtracting blocks free for
+non-super user from the total blocks count, which showed the filesystem usage as
+100% as soon as all non-reserved blocks were allocated, whereas there still may be
+some free space available to root user (usually ~ 2-5%). The space test value
+will now match the output of utilities like "df".
+
+New: Space usage test events and status now presents the usage using byte-based unit
+rather then blocks count.
+
+New: Provide more details for HTTP request errors.
+
+New: The permission statement extended by permissions change test. Syntax:
+    if changed permission then <action>
+
+Fixed: If multiple timestamp or size test rules were defined for single object
+and the list of rules included value change test, the list of rules may not
+be fully evaluated.
+
+Fixed: Linux: Issue #142: fix the speed monitoring for 10Gb/s+ interfaces.
+
+Fixed: Issue #147: invalid total (up/down)load values.
+
+Fixed: Linux 32-bit + FreeBSD 32-bit + MaxOSX: Issue #138: handle 32-bit counter wraps.
+
+Fixed: Linux: Support monitoring of bonded network interfaces.
+
+Fixed: Linux: If the link was up while its state was tested, but it went down before
+link speed was tested, monit triggered speed (4294967295 Mb/s) + duplex (half-duplex)
+change events (if corresponding tests were enabled).
+
+Fixed: Higher total upload/download test precision for 'last hour' range.
+
+Fixed: Minor memory leak on monit reload if multiple pid/ppid tests were defined.
+
+Fixed: HTTP GUI: Don't show the implicit existence test for network check (not used).
+
+Fixed: Issue #143: Ping test may block longer then timeout settings and the event description
+in the case of timeout reported value 1000x higher.
+
+Fixed: Issue #144: Websocket protocol test - mask frames per RFC-6455.
+
+Fixed: Issue #146: Monit didn't start if checksum test was set for nonexistent file.
+
+Fixed: Issue #150: Linux: Pattern based process check may not match for command lines longer
+then 1024 characters.
+
+Fixed: Issue #152: fix event queue quota handling.
+
+Fixed: "monit validate" returns exit value 1 only if there were some errors.
+
+Fixed: port test: if the hostname has multiple IP addresses, try each IP address until first success
+or all addresses failed. Originally Monit tried only the first interface in the resolved set, ignoring
+the rest.
+
+Fixed: Show correct Monit uptime if the system time jumped.
+
+Fixed: Don't show link capacity and upload/download rate if the link is down.
+
+Fixed: Show integer number when presenting byte-values with [B] unit (drop ".0" postfix).
+
+Fixed: Support paths up to PATH_MAX in the event queue.
+
+Fixed: Action was reported as "Ignored" for the State_Changed event type if the delivery failed, event
+was stored to the queue and the delivery was retried later.
+
 
 Version 5.11
 
@@ -38,8 +130,7 @@ skipped only once per minute.
 Fixed: Issue #114: If the the test is on hold due to the "every" option schedule,
 display last status instead of "Waiting".
 
-Fixed: Issue #115: The CLI/GUI reported port timeout value 1000x
-higher.
+Fixed: Issue #115: The CLI/GUI reported port timeout value 1000x higher.
 
 Fixed: If ping is not allowed (insufficient permissions), display value as "N/A"
 instead of negative response time.
