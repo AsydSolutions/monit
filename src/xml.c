@@ -156,7 +156,7 @@ static void document_foot(StringBuffer_T B) {
  */
 static void status_service(Service_T S, StringBuffer_T B, Level_Type L, int V) {
         Event_T E = S->eventlist;
-        
+
         if (V == 2)
                 StringBuffer_append(B, "<service name=\"%s\"><type>%d</type>", S->name ? S->name : "", S->type);
         else
@@ -187,7 +187,7 @@ static void status_service(Service_T S, StringBuffer_T B, Level_Type L, int V) {
 
         /* if the service is in error state, display first active error message to provide more details */
         while (E) {
-                if ((E->state == STATE_FAILED || E->state == STATE_CHANGED) && (S->error & E->id) && E->message) {
+                if ((E->state == State_Failed || E->state == State_Changed) && (S->error & E->id) && E->message) {
                         StringBuffer_append(B, "<status_message><![CDATA[%s]]></status_message>", E->message);
                         break;
                 }
