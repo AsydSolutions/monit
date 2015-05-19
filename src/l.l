@@ -219,6 +219,8 @@ start             { return START; }
 stop              { return STOP; }
 port(number)?     { return PORT; }
 unix(socket)?     { return UNIXSOCKET; }
+ipv4              { return IPV4; }
+ipv6              { return IPV6; }
 type              { return TYPE; }
 proto(col)?       { return PROTOCOL; }
 tcp               { return TCP; }
@@ -247,6 +249,7 @@ smtp              { return SMTP; }
 smtps             { return SMTPS; }
 postfix-policy    { return POSTFIXPOLICY; }
 pop               { return POP; }
+pops              { return POPS; }
 imap              { return IMAP; }
 imaps             { return IMAPS; }
 clamav            { return CLAMAV; }
@@ -315,6 +318,7 @@ tlsv12            { return TLSV12; }
 sslauto           { return SSLAUTO; }
 inode(s)?         { return INODE; }
 space             { return SPACE; }
+free              { return TFREE; }
 perm(ission)?     { return PERMISSION; }
 exec(ute)?        { return EXEC; }
 size              { return SIZE; }
@@ -330,6 +334,8 @@ unmonitor         { return UNMONITOR; }
 action            { return ACTION; }
 icmp              { return ICMP; }
 ping              { return PING; }
+ping4             { return PING4; }
+ping6             { return PING6; }
 echo              { return ICMPECHO; }
 send              { return SEND; }
 expect            { return EXPECT; }

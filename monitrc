@@ -16,16 +16,16 @@
 ##
 ## Start Monit in the background (run as a daemon):
 #
-set daemon  60              # check services at 1-minute intervals
+set daemon  30              # check services at 30 seconds intervals
 #   with start delay 240    # optional: delay the first check by 4-minutes (by 
 #                           # default Monit check immediately after Monit start)
 #
 #
-## Set syslog logging with the 'daemon' facility. If the FACILITY option is
-## omitted, Monit will use 'user' facility by default. If you want to log to 
-## a standalone log file instead, specify the full path to the log file
+## Set syslog logging. If you want to log to a standalone log file instead,
+## specify the full path to the log file
 #
-# set logfile syslog facility log_daemon                       
+set logfile syslog
+
 #
 #
 ## Set the location of the Monit lock file which stores the process id of the
@@ -188,7 +188,7 @@ set httpd port 2812 and
 #    if failed port 443 type tcpssl protocol http
 #       with timeout 15 seconds
 #    then restart
-#    if 3 restarts within 5 cycles then timeout
+#    if 3 restarts within 5 cycles then unmonitor
 #    depends on apache_bin
 #    group server
 #    

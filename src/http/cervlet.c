@@ -296,11 +296,11 @@ static void printFavicon(HttpResponse res) {
         }
         if (l) {
                 res->is_committed = true;
-                socket_print(S, "HTTP/1.0 200 OK\r\n");
-                socket_print(S, "Content-length: %lu\r\n", (unsigned long)l);
-                socket_print(S, "Content-Type: image/x-icon\r\n");
-                socket_print(S, "Connection: close\r\n\r\n");
-                socket_write(S, favicon, l);
+                Socket_print(S, "HTTP/1.0 200 OK\r\n");
+                Socket_print(S, "Content-length: %lu\r\n", (unsigned long)l);
+                Socket_print(S, "Content-Type: image/x-icon\r\n");
+                Socket_print(S, "Connection: close\r\n\r\n");
+                Socket_write(S, favicon, l);
         }
 }
 
@@ -1094,14 +1094,27 @@ static void do_home_program(HttpRequest req, HttpResponse res) {
                         StringBuffer_append(res->outputbuffer, "<td align='right'>-</td>");
                 } else {
                         if (s->program->started) {
-                                char t[32];
                                 StringBuffer_append(res->outputbuffer, "<td align='left' class='short'>");
-                                if (StringBuffer_length(s->program->output))
-                                        escapeHTML(res->outputbuffer, StringBuffer_toString(s->program->output));
-                                else
+                                if (StringBuffer_length(s->program->output)) {
+                                        // Print first line only (escape HTML characters if any)
+                                        const char *output = StringBuffer_toString(s->program->output);
+                                        for (int i = 0; output[i]; i++) {
+                                                if (output[i] == '<')
+                                                        StringBuffer_append(res->outputbuffer, "&lt;");
+                                                else if (output[i] == '>')
+                                                        StringBuffer_append(res->outputbuffer, "&gt;");
+                                                else if (output[i] == '&')
+                                                        StringBuffer_append(res->outputbuffer, "&amp;");
+                                                else if (output[i] == '\r' || output[i] == '\n')
+                                                        break;
+                                                else
+                                                        StringBuffer_append(res->outputbuffer, "%c", output[i]);
+                                        }
+                                } else {
                                         StringBuffer_append(res->outputbuffer, "no output");
+                                }
                                 StringBuffer_append(res->outputbuffer, "</td>");
-                                StringBuffer_append(res->outputbuffer, "<td align='right'>%s</td>", Time_fmt(t, sizeof(t), "%d %b %Y %H:%M:%S", s->program->started));
+                                StringBuffer_append(res->outputbuffer, "<td align='right'>%s</td>", Time_fmt((char[32]){}, 32, "%d %b %Y %H:%M:%S", s->program->started));
                                 StringBuffer_append(res->outputbuffer, "<td align='right'>%d</td>", s->program->exitStatus);
                         } else {
                                 StringBuffer_append(res->outputbuffer, "<td align='right'>N/A</td>");
@@ -1570,9 +1583,9 @@ static void print_service_rules_port(HttpResponse res, Service_T s) {
         for (Port_T p = s->portlist; p; p = p->next) {
                 StringBuffer_append(res->outputbuffer, "<tr class='rule'><td>Port</td><td>");
                 if (p->retry > 1)
-                        Util_printRule(res->outputbuffer, p->action, "If failed [%s]:%d%s type %s protocol %s with timeout %d seconds and retry %d times", p->hostname, p->port, p->request ? p->request : "", Util_portTypeDescription(p), p->protocol->name, p->timeout / 1000, p->retry);
+                        Util_printRule(res->outputbuffer, p->action, "If failed [%s]:%d%s type %s/%s protocol %s with timeout %d seconds and retry %d times", p->hostname, p->port, p->request ? p->request : "", Util_portTypeDescription(p), Util_portIpDescription(p), p->protocol->name, p->timeout / 1000, p->retry);
                 else
-                        Util_printRule(res->outputbuffer, p->action, "If failed [%s]:%d%s type %s protocol %s with timeout %d seconds", p->hostname, p->port, p->request ? p->request : "", Util_portTypeDescription(p), p->protocol->name, p->timeout / 1000);
+                        Util_printRule(res->outputbuffer, p->action, "If failed [%s]:%d%s type %s/%s protocol %s with timeout %d seconds", p->hostname, p->port, p->request ? p->request : "", Util_portTypeDescription(p), Util_portIpDescription(p), p->protocol->name, p->timeout / 1000);
                 StringBuffer_append(res->outputbuffer, "</td></tr>");
                 if (p->SSL.certmd5 != NULL)
                         StringBuffer_append(res->outputbuffer, "<tr class='rule'><td>Server certificate md5 sum</td><td>%s</td></tr>", p->SSL.certmd5);
@@ -1594,7 +1607,17 @@ static void print_service_rules_socket(HttpResponse res, Service_T s) {
 
 static void print_service_rules_icmp(HttpResponse res, Service_T s) {
         for (Icmp_T i = s->icmplist; i; i = i->next) {
-                StringBuffer_append(res->outputbuffer, "<tr class='rule'><td>Ping</td><td>");
+                switch (i->family) {
+                        case Socket_Ip4:
+                                StringBuffer_append(res->outputbuffer, "<tr class='rule'><td>Ping4</td><td>");
+                                break;
+                        case Socket_Ip6:
+                                StringBuffer_append(res->outputbuffer, "<tr class='rule'><td>Ping6</td><td>");
+                                break;
+                        default:
+                                StringBuffer_append(res->outputbuffer, "<tr class='rule'><td>Ping</td><td>");
+                                break;
+                }
                 Util_printRule(res->outputbuffer, i->action, "If failed [count %d with timeout %d seconds]", i->count, i->timeout / 1000);
                 StringBuffer_append(res->outputbuffer, "</td></tr>");
         }
@@ -1670,8 +1693,28 @@ static void print_service_rules_filesystem(HttpResponse res, Service_T s) {
                         else
                                 Util_printRule(res->outputbuffer, dl->action, "If %s %.1f%%", operatornames[dl->operator], dl->limit_percent / 10.);
                         StringBuffer_append(res->outputbuffer, "</td></tr>");
+                } else if (dl->resource == Resource_InodeFree) {
+                        StringBuffer_append(res->outputbuffer, "<tr class='rule'><td>Inodes free limit</td><td>");
+                        if (dl->limit_absolute > -1)
+                                Util_printRule(res->outputbuffer, dl->action, "If %s %lld", operatornames[dl->operator], dl->limit_absolute);
+                        else
+                                Util_printRule(res->outputbuffer, dl->action, "If %s %.1f%%", operatornames[dl->operator], dl->limit_percent / 10.);
+                        StringBuffer_append(res->outputbuffer, "</td></tr>");
                 } else if (dl->resource == Resource_Space) {
                         StringBuffer_append(res->outputbuffer, "<tr class='rule'><td>Space usage limit</td><td>");
+                        if (dl->limit_absolute > -1) {
+                                if (s->inf->priv.filesystem.f_bsize > 0) {
+                                        char buf[STRLEN];
+                                        Util_printRule(res->outputbuffer, dl->action, "If %s %s", operatornames[dl->operator], Str_bytesToSize(dl->limit_absolute * s->inf->priv.filesystem.f_bsize, buf));
+                                } else {
+                                        Util_printRule(res->outputbuffer, dl->action, "If %s %lld blocks", operatornames[dl->operator], dl->limit_absolute);
+                                }
+                        } else {
+                                Util_printRule(res->outputbuffer, dl->action, "If %s %.1f%%", operatornames[dl->operator], dl->limit_percent / 10.);
+                        }
+                        StringBuffer_append(res->outputbuffer, "</td></tr>");
+                } else if (dl->resource == Resource_SpaceFree) {
+                        StringBuffer_append(res->outputbuffer, "<tr class='rule'><td>Space free limit</td><td>");
                         if (dl->limit_absolute > -1) {
                                 if (s->inf->priv.filesystem.f_bsize > 0) {
                                         char buf[STRLEN];
@@ -1964,9 +2007,9 @@ static void print_service_status_port(HttpResponse res, Service_T s) {
                 if (! status)
                         StringBuffer_append(res->outputbuffer, "<td>-<td>");
                 else if (! p->is_available)
-                        StringBuffer_append(res->outputbuffer, "<td class='red-text'>connection failed to [%s]:%d%s type %s protocol %s</td>", p->hostname, p->port, p->request ? p->request : "", Util_portTypeDescription(p), p->protocol->name);
+                        StringBuffer_append(res->outputbuffer, "<td class='red-text'>failed to [%s]:%d%s type %s/%s protocol %s</td>", p->hostname, p->port, p->request ? p->request : "", Util_portTypeDescription(p), Util_portIpDescription(p), p->protocol->name);
                 else
-                        StringBuffer_append(res->outputbuffer, "<td>%.3fs to %s:%d%s type %s protocol %s</td>", p->response, p->hostname, p->port, p->request ? p->request : "", Util_portTypeDescription(p), p->protocol->name);
+                        StringBuffer_append(res->outputbuffer, "<td>%.3fs to %s:%d%s type %s/%s protocol %s</td>", p->response, p->hostname, p->port, p->request ? p->request : "", Util_portTypeDescription(p), Util_portIpDescription(p), p->protocol->name);
                 StringBuffer_append(res->outputbuffer, "</tr>");
         }
 }
@@ -1979,7 +2022,7 @@ static void print_service_status_socket(HttpResponse res, Service_T s) {
                 if (! status)
                         StringBuffer_append(res->outputbuffer, "<td>-<td>");
                 else if (! p->is_available)
-                        StringBuffer_append(res->outputbuffer, "<td class='red-text'>connection failed to %s type %s protocol %s</td>", p->pathname, Util_portTypeDescription(p), p->protocol->name);
+                        StringBuffer_append(res->outputbuffer, "<td class='red-text'>failed to %s type %s protocol %s</td>", p->pathname, Util_portTypeDescription(p), p->protocol->name);
                 else
                         StringBuffer_append(res->outputbuffer, "<td>%.3fs to %s type %s protocol %s</td>", p->response, p->pathname, Util_portTypeDescription(p), p->protocol->name);
                 StringBuffer_append(res->outputbuffer, "</tr>");
@@ -2474,7 +2517,7 @@ static void print_status(HttpRequest req, HttpResponse res, int version) {
         if (stringFormat && Str_startsWith(stringFormat, "xml")) {
                 char buf[STRLEN];
                 StringBuffer_T sb = StringBuffer_create(256);
-                status_xml(sb, NULL, level, version, socket_get_local_host(req->S, buf, sizeof(buf)));
+                status_xml(sb, NULL, level, version, Socket_getLocalHost(req->S, buf, sizeof(buf)));
                 StringBuffer_append(res->outputbuffer, "%s", StringBuffer_toString(sb));
                 StringBuffer_free(&sb);
                 set_content_type(res, "text/xml");
@@ -2547,10 +2590,10 @@ static void status_service_txt(Service_T s, HttpResponse res, Level_Type level) 
                                                     "  %-33s %d\n"
                                                     "  %-33s %d\n"
                                                     "  %-33s %s\n",
-                                                    "permission", s->inf->priv.directory.mode & 07777,
-                                                    "uid", (int)s->inf->priv.directory.uid,
-                                                    "gid", (int)s->inf->priv.directory.gid,
-                                                    "timestamp", Time_string(s->inf->priv.directory.timestamp, buf));
+                                                    "permission", s->inf->priv.fifo.mode & 07777,
+                                                    "uid", (int)s->inf->priv.fifo.uid,
+                                                    "gid", (int)s->inf->priv.fifo.gid,
+                                                    "timestamp", Time_string(s->inf->priv.fifo.timestamp, buf));
                                         break;
 
                                 case Service_Net:
@@ -2592,9 +2635,9 @@ static void status_service_txt(Service_T s, HttpResponse res, Level_Type level) 
                                                     "  %-33s %o\n"
                                                     "  %-33s %d\n"
                                                     "  %-33s %d\n",
-                                                    "permission", s->inf->priv.directory.mode & 07777,
-                                                    "uid", (int)s->inf->priv.directory.uid,
-                                                    "gid", (int)s->inf->priv.directory.gid);
+                                                    "permission", s->inf->priv.filesystem.mode & 07777,
+                                                    "uid", (int)s->inf->priv.filesystem.uid,
+                                                    "gid", (int)s->inf->priv.filesystem.gid);
                                         StringBuffer_append(res->outputbuffer,
                                                             "  %-33s 0x%x\n"
                                                             "  %-33s %s\n",
@@ -2685,14 +2728,24 @@ static void status_service_txt(Service_T s, HttpResponse res, Level_Type level) 
                                                             "ping response time", i->response);
                         }
                         for (Port_T p = s->portlist; p; p = p->next) {
-                                StringBuffer_append(res->outputbuffer,
-                                                    "  %-33s %.3fs to [%s]:%d%s type %s protocol %s\n",
-                                                    "port response time", p->is_available ? p->response : 0., p->hostname, p->port, p->request ? p->request : "", Util_portTypeDescription(p), p->protocol->name);
+                                if (p->is_available)
+                                        StringBuffer_append(res->outputbuffer,
+                                                    "  %-33s %.3fs to [%s]:%d%s type %s/%s protocol %s\n",
+                                                    "port response time", p->response, p->hostname, p->port, p->request ? p->request : "", Util_portTypeDescription(p), Util_portIpDescription(p), p->protocol->name);
+                                else
+                                        StringBuffer_append(res->outputbuffer,
+                                                    "  %-33s FAILED to [%s]:%d%s type %s/%s protocol %s\n",
+                                                    "port response time", p->hostname, p->port, p->request ? p->request : "", Util_portTypeDescription(p), Util_portIpDescription(p), p->protocol->name);
                         }
                         for (Port_T p = s->socketlist; p; p = p->next) {
-                                StringBuffer_append(res->outputbuffer,
+                                if (p->is_available)
+                                        StringBuffer_append(res->outputbuffer,
                                                     "  %-33s %.3fs to %s type %s protocol %s\n",
-                                                    "unix socket response time", p->is_available ? p->response : 0., p->pathname, Util_portTypeDescription(p), p->protocol->name);
+                                                    "unix socket response time", p->response, p->pathname, Util_portTypeDescription(p), p->protocol->name);
+                                else
+                                        StringBuffer_append(res->outputbuffer,
+                                                    "  %-33s FAILED to %s type %s protocol %s\n",
+                                                    "unix socket response time", p->pathname, Util_portTypeDescription(p), p->protocol->name);
                         }
                         if (s->type == Service_System && Run.doprocess) {
                                 StringBuffer_append(res->outputbuffer,

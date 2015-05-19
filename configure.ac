@@ -6,7 +6,7 @@ AC_PREREQ([2.53])
 # Note: in  case of beta subversion, use underscore "_" rather then dash "-"
 # since RPM doesn't allow dash in Version
 # Example: 5.0_beta2
-AC_INIT([monit], [5.12], [monit-general@nongnu.org])
+AC_INIT([monit], [5.13], [monit-general@nongnu.org])
 AC_CONFIG_AUX_DIR(config)
 AC_CONFIG_MACRO_DIR([m4])
 AM_INIT_AUTOMAKE
@@ -184,7 +184,6 @@ AC_CHECK_HEADERS([ \
 	sys/vfs.h \
 	syslog.h \
 	unistd.h \
-        uvm/uvm.h \
         uvm/uvm_extern.h \
         uvm/uvm_param.h \
         vm/vm.h \
@@ -338,6 +337,25 @@ AC_CHECK_HEADERS([ \
          #endif
         ])
 
+AC_CHECK_HEADERS([ \
+	uvm/uvm.h \
+        ],
+        [],
+        [],
+        [
+         #ifdef HAVE_SYS_MUTEX_H
+         #include <sys/mutex.h>
+         #endif
+         #ifdef HAVE_SYS_TYPES_H
+         #include <sys/types.h>
+         #endif
+         #ifdef HAVE_SYS_PARAM_H
+         #include <sys/param.h>
+         #endif
+         #ifdef HAVE_UVM_UVM_PARAM_H
+         #include <uvm/uvm_param.h>
+         #endif
+        ])
 
 # ------------------------------------------------------------------------
 # Types
@@ -453,7 +471,7 @@ AC_CACHE_VAL(ac_cv_ipv6,
         ac_cv_ipv6=no))
 AC_MSG_RESULT($ac_cv_ipv6)
 if test $ac_cv_ipv6 = yes ; then
-        AC_DEFINE([IPV6], 1, [Define to 1 if the system supports IPv6])
+        AC_DEFINE([HAVE_IPV6], 1, [Define to 1 if the system supports IPv6])
 fi
 
 

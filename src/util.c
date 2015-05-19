@@ -832,7 +832,7 @@ void Util_printRunList() {
                                mta->port,
                                mta->ssl.use_ssl ? "(ssl)" : "",
                                mta->next ? ", " : " ");
-                printf("with timeout %d seconds", Run.mailserver_timeout/1000);
+                printf("with timeout %d seconds", Run.mailserver_timeout / 1000);
                 if (Run.mail_hostname)
                         printf(" using '%s' as my hostname", Run.mail_hostname);
                 printf("\n");
@@ -1030,15 +1030,25 @@ void Util_printService(Service_T s) {
 
         for (Icmp_T o = s->icmplist; o; o = o->next) {
                 StringBuffer_clear(buf);
-                printf(" %-20s = %s\n", "Ping", StringBuffer_toString(Util_printRule(buf, o->action, "if failed count %d with timeout %d seconds", o->count, o->timeout / 1000)));
+                switch (o->family) {
+                        case Socket_Ip4:
+                                printf(" %-20s = %s\n", "Ping4", StringBuffer_toString(Util_printRule(buf, o->action, "if failed count %d with timeout %d seconds", o->count, o->timeout / 1000)));
+                                break;
+                        case Socket_Ip6:
+                                printf(" %-20s = %s\n", "Ping6", StringBuffer_toString(Util_printRule(buf, o->action, "if failed count %d with timeout %d seconds", o->count, o->timeout / 1000)));
+                                break;
+                        default:
+                                printf(" %-20s = %s\n", "Ping", StringBuffer_toString(Util_printRule(buf, o->action, "if failed count %d with timeout %d seconds", o->count, o->timeout / 1000)));
+                                break;
+                }
         }
 
         for (Port_T o = s->portlist; o; o = o->next) {
                 StringBuffer_clear(buf);
                 if (o->retry > 1)
-                        printf(" %-20s = %s\n", "Port", StringBuffer_toString(Util_printRule(buf, o->action, "if failed [%s]:%d%s type %s protocol %s with timeout %d seconds and retry %d times", o->hostname, o->port, o->request ? o->request : "", Util_portTypeDescription(o), o->protocol->name, o->timeout / 1000, o->retry)));
+                        printf(" %-20s = %s\n", "Port", StringBuffer_toString(Util_printRule(buf, o->action, "if failed [%s]:%d%s type %s/%s protocol %s with timeout %d seconds and retry %d times", o->hostname, o->port, o->request ? o->request : "", Util_portTypeDescription(o), Util_portIpDescription(o), o->protocol->name, o->timeout / 1000, o->retry)));
                 else
-                        printf(" %-20s = %s\n", "Port", StringBuffer_toString(Util_printRule(buf, o->action, "if failed [%s]:%d%s type %s protocol %s with timeout %d seconds", o->hostname, o->port, o->request ? o->request : "", Util_portTypeDescription(o), o->protocol->name, o->timeout / 1000)));
+                        printf(" %-20s = %s\n", "Port", StringBuffer_toString(Util_printRule(buf, o->action, "if failed [%s]:%d%s type %s/%s protocol %s with timeout %d seconds", o->hostname, o->port, o->request ? o->request : "", Util_portTypeDescription(o), Util_portIpDescription(o), o->protocol->name, o->timeout / 1000)));
                 if (o->SSL.certmd5 != NULL)
                         printf(" %-20s = %s\n", "Server cert md5 sum", o->SSL.certmd5);
         }
@@ -1150,6 +1160,14 @@ void Util_printService(Service_T s) {
                                :
                                StringBuffer_toString(Util_printRule(buf, o->action, "if %s %.1f%%", operatornames[o->operator], o->limit_percent / 10.))
                                );
+                } else if (o->resource == Resource_InodeFree) {
+                        printf(" %-20s = %s\n", "Inodes free limit",
+                               o->limit_absolute > -1
+                               ?
+                               StringBuffer_toString(Util_printRule(buf, o->action, "if %s %lld", operatornames[o->operator], o->limit_absolute))
+                               :
+                               StringBuffer_toString(Util_printRule(buf, o->action, "if %s %.1f%%", operatornames[o->operator], o->limit_percent / 10.))
+                               );
                 } else if (o->resource == Resource_Space) {
                         if (o->limit_absolute > -1) {
                                if (s->inf->priv.filesystem.f_bsize > 0)
@@ -1158,6 +1176,15 @@ void Util_printService(Service_T s) {
                                        printf(" %-20s = %s\n", "Space usage limit", StringBuffer_toString(Util_printRule(buf, o->action, "if %s %lld blocks", operatornames[o->operator], o->limit_absolute)));
                         } else {
                                printf(" %-20s = %s\n", "Space usage limit", StringBuffer_toString(Util_printRule(buf, o->action, "if %s %.1f%%", operatornames[o->operator], o->limit_percent / 10.)));
+                        }
+                } else if (o->resource == Resource_SpaceFree) {
+                        if (o->limit_absolute > -1) {
+                               if (s->inf->priv.filesystem.f_bsize > 0)
+                                       printf(" %-20s = %s\n", "Space free limit", StringBuffer_toString(Util_printRule(buf, o->action, "if %s %s", operatornames[o->operator], Str_bytesToSize(o->limit_absolute * s->inf->priv.filesystem.f_bsize, buffer))));
+                                else
+                                       printf(" %-20s = %s\n", "Space free limit", StringBuffer_toString(Util_printRule(buf, o->action, "if %s %lld blocks", operatornames[o->operator], o->limit_absolute)));
+                        } else {
+                               printf(" %-20s = %s\n", "Space free limit", StringBuffer_toString(Util_printRule(buf, o->action, "if %s %.1f%%", operatornames[o->operator], o->limit_percent / 10.)));
                         }
                 }
         }
@@ -1728,10 +1755,10 @@ boolean_t Util_hasServiceStatus(Service_T s) {
 
 
 char *Util_getHTTPHostHeader(Socket_T s, char *hostBuf, int len) {
-        if (socket_get_remote_port(s) == 80)
-                snprintf(hostBuf, len, "%s", socket_get_remote_host(s));
+        if (Socket_getRemotePort(s) == 80)
+                snprintf(hostBuf, len, "%s", Socket_getRemoteHost(s));
         else
-                snprintf(hostBuf, len, "%s:%d", socket_get_remote_host(s), socket_get_remote_port(s));
+                snprintf(hostBuf, len, "%s:%d", Socket_getRemoteHost(s), Socket_getRemotePort(s));
         return hostBuf;
 }
 
@@ -1887,11 +1914,25 @@ StringBuffer_T Util_printRule(StringBuffer_T buf, EventAction_T action, const ch
 }
 
 
-char *Util_portTypeDescription(Port_T p) {
+const char *Util_portIpDescription(Port_T p) {
+        switch (p->family) {
+                case Socket_Ip:
+                        return "IP";
+                case Socket_Ip4:
+                        return "IPv4";
+                case Socket_Ip6:
+                        return "IPv6";
+                default:
+                        return "UNKNOWN";
+        }
+}
+
+
+const char *Util_portTypeDescription(Port_T p) {
         switch (p->type) {
-                case SOCK_STREAM:
+                case Socket_Tcp:
                         return p->SSL.use_ssl ? "TCPSSL" : "TCP";
-                case SOCK_DGRAM:
+                case Socket_Udp:
                         return "UDP";
                 default:
                         return "UNKNOWN";
@@ -1901,7 +1942,7 @@ char *Util_portTypeDescription(Port_T p) {
 
 char *Util_portDescription(Port_T p, char *buf, int bufsize) {
         if (p->family == Socket_Ip || p->family == Socket_Ip4 || p->family == Socket_Ip6)
-                snprintf(buf, STRLEN, "[%s]:%d%s [%s]", p->hostname, p->port, p->request ? p->request : "", Util_portTypeDescription(p));
+                snprintf(buf, STRLEN, "[%s]:%d%s [%s/%s]", p->hostname, p->port, p->request ? p->request : "", Util_portTypeDescription(p), Util_portIpDescription(p));
         else if (p->family == Socket_Unix)
                 snprintf(buf, STRLEN, "%s", p->pathname);
         else
@@ -1922,23 +1963,22 @@ int Util_getfqdnhostname(char *buf, unsigned len) {
         snprintf(buf, len, "%s", hostname);
 
         // Try to look for FQDN hostname
-        struct addrinfo *result, hints = {
+        struct addrinfo *result = NULL, hints = {
                 .ai_family = AF_UNSPEC,
                 .ai_flags = AI_CANONNAME,
                 .ai_socktype = SOCK_STREAM
         };
-        if ((status = getaddrinfo(hostname, NULL, &hints, &result))) {
-                LogError("Cannot translate '%s' to FQDN name -- %s\n", hostname, status == EAI_SYSTEM ? STRERROR : gai_strerror(status));
-        } else {
+        if (! (status = getaddrinfo(hostname, NULL, &hints, &result))) {
                 for (struct addrinfo *r = result; r; r = r->ai_next) {
                         if (Str_startsWith(r->ai_canonname, hostname)) {
                                 snprintf(buf, len, "%s", r->ai_canonname);
                                 break;
                         }
                 }
-        }
-        if (result)
                 freeaddrinfo(result);
+        } else {
+                LogError("Cannot translate '%s' to FQDN name -- %s\n", hostname, status == EAI_SYSTEM ? STRERROR : gai_strerror(status));
+        }
         return 0;
 }
 

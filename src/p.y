@@ -276,7 +276,6 @@ static void  reset_icmpset();
 static void  reset_rateset();
 static void  check_name(char *);
 static int   check_perm(int);
-static void  check_hostname (char *);
 static void  check_exec(char *);
 static int   cleanup_hash_string(char *);
 static void  check_depend();
@@ -300,10 +299,10 @@ static int verifyMaxForward(int);
 %token INTERFACE LINK PACKET ERROR BYTEIN BYTEOUT PACKETIN PACKETOUT SPEED SATURATION UPLOAD DOWNLOAD TOTAL
 %token IDFILE STATEFILE SEND EXPECT EXPECTBUFFER CYCLE COUNT REMINDER
 %token PIDFILE START STOP PATHTOK
-%token HOST HOSTNAME PORT TYPE UDP TCP TCPSSL PROTOCOL CONNECTION
+%token HOST HOSTNAME PORT IPV4 IPV6 TYPE UDP TCP TCPSSL PROTOCOL CONNECTION
 %token ALERT NOALERT MAILFORMAT UNIXSOCKET SIGNATURE
 %token TIMEOUT RETRY RESTART CHECKSUM EVERY NOTEVERY
-%token DEFAULT HTTP HTTPS APACHESTATUS FTP SMTP SMTPS POP IMAP IMAPS CLAMAV NNTP NTP3 MYSQL DNS WEBSOCKET
+%token DEFAULT HTTP HTTPS APACHESTATUS FTP SMTP SMTPS POP POPS IMAP IMAPS CLAMAV NNTP NTP3 MYSQL DNS WEBSOCKET
 %token SSH DWP LDAP2 LDAP3 RDATE RSYNC TNS PGSQL POSTFIXPOLICY SIP LMTP GPS RADIUS MEMCACHE REDIS MONGODB SIEVE
 %token <string> STRING PATH MAILADDR MAILFROM MAILREPLYTO MAILSUBJECT
 %token <string> MAILBODY SERVICENAME STRINGNAME
@@ -320,8 +319,8 @@ static int verifyMaxForward(int);
 %token TIMESTAMP CHANGED SECOND MINUTE HOUR DAY MONTH
 %token SSLAUTO SSLV2 SSLV3 TLSV1 TLSV11 TLSV12 CERTMD5
 %token BYTE KILOBYTE MEGABYTE GIGABYTE
-%token INODE SPACE PERMISSION SIZE MATCH NOT IGNORE ACTION UPTIME
-%token EXEC UNMONITOR PING ICMP ICMPECHO NONEXIST EXIST INVALID DATA RECOVERED PASSED SUCCEEDED
+%token INODE SPACE TFREE PERMISSION SIZE MATCH NOT IGNORE ACTION UPTIME
+%token EXEC UNMONITOR PING PING4 PING6 ICMP ICMPECHO NONEXIST EXIST INVALID DATA RECOVERED PASSED SUCCEEDED
 %token URL CONTENT PID PPID FSFLAG
 %token REGISTER CREDENTIALS
 %token <url> URLOBJECT
@@ -640,7 +639,6 @@ mmonitlist      : mmonit credentials
                 ;
 
 mmonit          : URLOBJECT nettimeout sslversion certmd5 {
-                    check_hostname(($<url>1)->hostname);
                     addmmonit($<url>1, $<number>2, $<number>3, $<string>4);
                   }
                 ;
@@ -676,7 +674,6 @@ mailserver      : STRING username password sslversion certmd5 {
                     FREE(argyytext);
                     argyytext = Str_dup($1);
 
-                    check_hostname($1);
                     mailserverset.host = $1;
                     mailserverset.username = $<string>2;
                     mailserverset.password = $<string>3;
@@ -694,7 +691,6 @@ mailserver      : STRING username password sslversion certmd5 {
                     FREE(argyytext);
                     argyytext = Str_dup($1);
 
-                    check_hostname($1);
                     mailserverset.host = $1;
                     mailserverset.port = $<number>3;
                     mailserverset.username = $<string>4;
@@ -924,7 +920,6 @@ checkdir        : CHECKDIR SERVICENAME PATHTOK PATH {
                 ;
 
 checkhost       : CHECKHOST SERVICENAME ADDRESS STRING {
-                    check_hostname($4);
                     createservice(Service_Host, $<string>2, $4, check_remote_host);
                   }
                 ;
@@ -1032,15 +1027,13 @@ hostname        : /* EMPTY */     { $<string>$ = NULL; }
                 | HOSTNAME STRING { $<string>$ = $2; }
                 ;
 
-connection      : IF FAILED host port type protocol urloption nettimeout retry rate1 THEN action1 recovery {
-                    portset.timeout = $<number>8;
-                    portset.retry = $<number>9;
-                    /* This is a workaround to support content match without having to create
-                     an URL object. 'urloption' creates the Request_T object we need minus the
-                     URL object, but with enough information to perform content test.
+connection      : IF FAILED host port ip type protocol urloption nettimeout retry rate1 THEN action1 recovery {
+                    portset.timeout = $<number>9;
+                    portset.retry = $<number>10;
+                    /* This is a workaround to support content match without having to create an URL object. 'urloption' creates the Request_T object we need minus the URL object, but with enough information to perform content test.
                      TODO: Parser is in need of refactoring */
                     portset.url_request = urlrequest;
-                    addeventaction(&(portset).action, $<number>12, $<number>13);
+                    addeventaction(&(portset).action, $<number>13, $<number>14);
                     addport(&(current->portlist), &portset);
                   }
                 | IF FAILED URL URLOBJECT urloption nettimeout retry rate1 THEN action1 recovery {
@@ -1061,6 +1054,7 @@ connectionunix  : IF FAILED unixsocket type protocol nettimeout retry rate1 THEN
                 ;
 
 icmp            : IF FAILED ICMP icmptype icmpcount nettimeout rate1 THEN action1 recovery {
+                        icmpset.family = Socket_Ip;
                         icmpset.type = $<number>4;
                         icmpset.count = $<number>5;
                         icmpset.timeout = $<number>6;
@@ -1068,6 +1062,23 @@ icmp            : IF FAILED ICMP icmptype icmpcount nettimeout rate1 THEN action
                         addicmp(&icmpset);
                   }
                 | IF FAILED PING icmpcount nettimeout rate1 THEN action1 recovery {
+                        icmpset.family = Socket_Ip;
+                        icmpset.type = ICMP_ECHO;
+                        icmpset.count = $<number>4;
+                        icmpset.timeout = $<number>5;
+                        addeventaction(&(icmpset).action, $<number>8, $<number>9);
+                        addicmp(&icmpset);
+                 }
+                | IF FAILED PING4 icmpcount nettimeout rate1 THEN action1 recovery {
+                        icmpset.family = Socket_Ip4;
+                        icmpset.type = ICMP_ECHO;
+                        icmpset.count = $<number>4;
+                        icmpset.timeout = $<number>5;
+                        addeventaction(&(icmpset).action, $<number>8, $<number>9);
+                        addicmp(&icmpset);
+                 }
+                | IF FAILED PING6 icmpcount nettimeout rate1 THEN action1 recovery {
+                        icmpset.family = Socket_Ip6;
                         icmpset.type = ICMP_ECHO;
                         icmpset.count = $<number>4;
                         icmpset.timeout = $<number>5;
@@ -1080,14 +1091,12 @@ host            : /* EMPTY */ {
                         portset.hostname = Str_dup(current->type == Service_Host ? current->path : LOCALHOST);
                   }
                 | HOST STRING {
-                        check_hostname($2);
                         portset.hostname = $2;
                   }
                 ;
 
 port            : PORT NUMBER {
                         portset.port = $2;
-                        portset.family = Socket_Ip;
                   }
                 ;
 
@@ -1097,14 +1106,25 @@ unixsocket      : UNIXSOCKET PATH {
                   }
                 ;
 
+ip              : /* EMPTY */ {
+                    portset.family = Socket_Ip;
+                  }
+                | IPV4 {
+                    portset.family = Socket_Ip4;
+                  }
+                | IPV6 {
+                    portset.family = Socket_Ip6;
+                  }
+                ;
+
 type            : /* EMPTY */ {
-                    portset.type = SOCK_STREAM;
+                    portset.type = Socket_Tcp;
                   }
                 | TYPE TCP {
-                    portset.type = SOCK_STREAM;
+                    portset.type = Socket_Tcp;
                   }
                 | TYPE TCPSSL sslversion certmd5  {
-                    portset.type = SOCK_STREAM;
+                    portset.type = Socket_Tcp;
                     portset.SSL.use_ssl = true;
                     portset.SSL.version = $<number>3;
                     if (portset.SSL.version == SSL_Disabled)
@@ -1112,7 +1132,7 @@ type            : /* EMPTY */ {
                     portset.SSL.certmd5 = $<string>4;
                   }
                 | TYPE UDP {
-                    portset.type = SOCK_DGRAM;
+                    portset.type = Socket_Udp;
                   }
                 ;
 
@@ -1167,7 +1187,7 @@ protocol        : /* EMPTY */  {
                         portset.protocol = Protocol_get(Protocol_HTTP);
                   }
                 | PROTOCOL HTTPS httplist {
-                        portset.type = SOCK_STREAM;
+                        portset.type = Socket_Tcp;
                         portset.SSL.use_ssl = true;
                         portset.SSL.version = SSL_Auto;
                         portset.protocol = Protocol_get(Protocol_HTTP);
@@ -1176,7 +1196,7 @@ protocol        : /* EMPTY */  {
                         portset.protocol = Protocol_get(Protocol_IMAP);
                   }
                 | PROTOCOL IMAPS {
-                        portset.type = SOCK_STREAM;
+                        portset.type = Socket_Tcp;
                         portset.SSL.use_ssl = true;
                         portset.SSL.version = SSL_Auto;
                         portset.protocol = Protocol_get(Protocol_IMAP);
@@ -1204,12 +1224,18 @@ protocol        : /* EMPTY */  {
                   }
                 | PROTOCOL NTP3  {
                     portset.protocol = Protocol_get(Protocol_NTP3);
-                    portset.type = SOCK_DGRAM;
+                    portset.type = Socket_Udp;
                   }
                 | PROTOCOL POSTFIXPOLICY {
                     portset.protocol = Protocol_get(Protocol_POSTFIXPOLICY);
                   }
                 | PROTOCOL POP {
+                    portset.protocol = Protocol_get(Protocol_POP);
+                  }
+                | PROTOCOL POPS {
+                    portset.type = Socket_Tcp;
+                    portset.SSL.use_ssl = true;
+                    portset.SSL.version = SSL_Auto;
                     portset.protocol = Protocol_get(Protocol_POP);
                   }
                 | PROTOCOL SIEVE {
@@ -1219,7 +1245,7 @@ protocol        : /* EMPTY */  {
                     portset.protocol = Protocol_get(Protocol_SMTP);
                   }
                 | PROTOCOL SMTPS {
-                        portset.type = SOCK_STREAM;
+                        portset.type = Socket_Tcp;
                         portset.SSL.use_ssl = true;
                         portset.SSL.version = SSL_Auto;
                         portset.protocol = Protocol_get(Protocol_SMTP);
@@ -1878,6 +1904,20 @@ inode           : IF INODE operator NUMBER rate1 THEN action1 recovery {
                     addeventaction(&(filesystemset).action, $<number>8, $<number>9);
                     addfilesystem(&filesystemset);
                   }
+                | IF INODE TFREE operator NUMBER rate1 THEN action1 recovery {
+                    filesystemset.resource = Resource_InodeFree;
+                    filesystemset.operator = $<number>4;
+                    filesystemset.limit_absolute = $5;
+                    addeventaction(&(filesystemset).action, $<number>8, $<number>9);
+                    addfilesystem(&filesystemset);
+                  }
+                | IF INODE TFREE operator NUMBER PERCENT rate1 THEN action1 recovery {
+                    filesystemset.resource = Resource_InodeFree;
+                    filesystemset.operator = $<number>4;
+                    filesystemset.limit_percent = (int)($5 * 10);
+                    addeventaction(&(filesystemset).action, $<number>9, $<number>10);
+                    addfilesystem(&filesystemset);
+                  }
                 ;
 
 space           : IF SPACE operator value unit rate1 THEN action1 recovery {
@@ -1894,6 +1934,22 @@ space           : IF SPACE operator value unit rate1 THEN action1 recovery {
                     filesystemset.operator = $<number>3;
                     filesystemset.limit_percent = (int)($4 * 10);
                     addeventaction(&(filesystemset).action, $<number>8, $<number>9);
+                    addfilesystem(&filesystemset);
+                  }
+                | IF SPACE TFREE operator value unit rate1 THEN action1 recovery {
+                    if (! filesystem_usage(current))
+                      yyerror2("Cannot read usage of filesystem %s", current->path);
+                    filesystemset.resource = Resource_SpaceFree;
+                    filesystemset.operator = $<number>4;
+                    filesystemset.limit_absolute = (long long)((double)$<real>5 / (double)current->inf->priv.filesystem.f_bsize * (double)$<number>6);
+                    addeventaction(&(filesystemset).action, $<number>9, $<number>10);
+                    addfilesystem(&filesystemset);
+                  }
+                | IF SPACE TFREE operator NUMBER PERCENT rate1 THEN action1 recovery {
+                    filesystemset.resource = Resource_SpaceFree;
+                    filesystemset.operator = $<number>4;
+                    filesystemset.limit_percent = (int)($5 * 10);
+                    addeventaction(&(filesystemset).action, $<number>9, $<number>10);
                     addfilesystem(&filesystemset);
                   }
                 ;
@@ -3193,6 +3249,7 @@ static void addicmp(Icmp_T is) {
         ASSERT(is);
 
         NEW(icmp);
+        icmp->family       = is->family;
         icmp->type         = is->type;
         icmp->count        = is->count;
         icmp->timeout      = is->timeout;
@@ -3335,10 +3392,9 @@ static void prepare_urlrequest(URL_T U) {
                 NEW(urlrequest);
         urlrequest->url = U;
         portset.hostname = Str_dup(U->hostname);
-        check_hostname(portset.hostname);
         portset.port = U->port;
         portset.url_request = urlrequest;
-        portset.type = SOCK_STREAM;
+        portset.type = Socket_Tcp;
         portset.request = Str_cat("%s%s%s", U->path, U->query ? "?" : "", U->query ? U->query : "");
         /* Only the HTTP protocol is supported for URLs.
          See also the lexer if this is to be changed in
@@ -3779,7 +3835,7 @@ static void reset_mailserverset() {
 static void reset_portset() {
         memset(&portset, 0, sizeof(struct myport));
         portset.socket = -1;
-        portset.type = SOCK_STREAM;
+        portset.type = Socket_Tcp;
         portset.family = Socket_Ip;
         portset.SSL.version = SSL_Auto;
         portset.timeout = NET_TIMEOUT;
@@ -4022,15 +4078,6 @@ static int check_perm(int perm) {
         return result;
 }
 
-
-/*
- * Check hostname
- */
-static void check_hostname(char *hostname) {
-        ASSERT(hostname);
-        if (! check_host(hostname))
-                yywarning2("Hostname %s did not resolve", hostname);
-}
 
 /*
  * Check the dependency graph for errors

@@ -81,6 +81,10 @@
 #include <netdb.h>
 #endif
 
+#ifdef HAVE_SYS_SOCKET_H
+#include <sys/socket.h>
+#endif
+
 #ifdef HAVE_MACH_BOOLEAN_H
 #include <mach/boolean.h>
 #endif
@@ -129,7 +133,6 @@ typedef enum {
 #define USEC_PER_MSEC      1000L
 
 #define ARGMAX             64
-#define HTTP_CONTENT_MAX   (1024*1000)
 #define MYPIDDIR           PIDDIR
 #define MYPIDFILE          "monit.pid"
 #define MYSTATEFILE        "monit.state"
@@ -181,14 +184,6 @@ typedef enum {
         Operator_NotEqual,
         Operator_Changed
 } __attribute__((__packed__)) Operator_Type;
-
-
-typedef enum {
-        Socket_Unix = 0,
-        Socket_Ip,      // IP, version not specified (IPv4 or IPv6)
-        Socket_Ip4,     // IPv4 only
-        Socket_Ip6      // IPv6 only
-} __attribute__((__packed__)) Socket_Family;
 
 
 typedef enum {
@@ -261,7 +256,9 @@ typedef enum {
         Resource_MemoryKbyteTotal,
         Resource_MemoryPercentTotal,
         Resource_Inode,
+        Resource_InodeFree,
         Resource_Space,
+        Resource_SpaceFree,
         Resource_CpuUser,
         Resource_CpuSystem,
         Resource_CpuWait,
@@ -474,20 +471,20 @@ typedef struct myauthentication {
 } *Auth_T;
 
 
-/** Defines process tree - data storage backend*/
+/** Defines process tree - data storage backend */
 typedef struct myprocesstree {
         boolean_t     visited;
         boolean_t     zombie;
         pid_t         pid;
         pid_t         ppid;
         int           parent;
+        int           uid;
+        int           euid;
+        int           gid;
         int           children_num;
         int           children_sum;
         short         cpu_percent;
         short         cpu_percent_sum;
-        uid_t         uid;
-        uid_t         euid;
-        gid_t         gid;
         unsigned long mem_kbyte;
         unsigned long mem_kbyte_sum;
         time_t        starttime;
@@ -524,7 +521,7 @@ typedef struct mysysteminfo {
 /** Defines a protocol object with protocol functions */
 typedef struct Protocol_T {
         const char *name;                                       /**< Protocol name */
-        boolean_t (*check)(Socket_T);          /**< Protocol verification function */
+        void (*check)(Socket_T);          /**< Protocol verification function */
 } *Protocol_T;
 
 
@@ -552,7 +549,7 @@ typedef struct myport {
         Generic_T generic;                                /**< Generic test handle */
         volatile int socket;                       /**< Socket used for connection */
         int port;                                                  /**< Portnumber */
-        int type;                   /**< Socket type used for connection (UDP/TCP) */
+        Socket_Type type;           /**< Socket type used for connection (UDP/TCP) */
         Socket_Family family;    /**< Socket family used for connection (NET/UNIX) */
         Hash_Type request_hashtype; /**< The optional type of hash for a req. document */
         Operator_Type operator;                           /**< Comparison operator */
@@ -603,6 +600,7 @@ typedef struct myicmp {
         int count;                                   /**< ICMP echo requests count */
         int timeout;         /**< The timeout in milliseconds to wait for response */
         boolean_t is_available;               /**< true if the server is available */
+        Socket_Family family;                 /**< ICMP family used for connection */
         double response;                              /**< ICMP ECHO response time */
         EventAction_T action;  /**< Description of the action upon event occurence */
 
@@ -876,16 +874,16 @@ typedef struct myinfo {
                         short space_percent;                   /**< Used space percentage * 10 */
                         int _flags;                      /**< Filesystem flags from last cycle */
                         int flags;                     /**< Filesystem flags from actual cycle */
+                        int uid;                                              /**< Owner's uid */
+                        int gid;                                              /**< Owner's gid */
                         mode_t mode;                                           /**< Permission */
-                        uid_t uid;                                            /**< Owner's uid */
-                        gid_t gid;                                            /**< Owner's gid */
                 } filesystem;
 
                 struct {
                         time_t timestamp;                                       /**< Timestamp */
                         mode_t mode;                                           /**< Permission */
-                        uid_t uid;                                            /**< Owner's uid */
-                        gid_t gid;                                            /**< Owner's gid */
+                        int uid;                                              /**< Owner's uid */
+                        int gid;                                              /**< Owner's gid */
                         off_t size;                                                  /**< Size */
                         off_t readpos;                        /**< Position for regex matching */
                         ino_t inode;                                                /**< Inode */
@@ -896,15 +894,15 @@ typedef struct myinfo {
                 struct {
                         time_t timestamp;                                       /**< Timestamp */
                         mode_t mode;                                           /**< Permission */
-                        uid_t uid;                                            /**< Owner's uid */
-                        gid_t gid;                                            /**< Owner's gid */
+                        int uid;                                              /**< Owner's uid */
+                        int gid;                                              /**< Owner's gid */
                 } directory;
 
                 struct {
                         time_t timestamp;                                       /**< Timestamp */
                         mode_t mode;                                           /**< Permission */
-                        uid_t uid;                                            /**< Owner's uid */
-                        gid_t gid;                                            /**< Owner's gid */
+                        int uid;                                              /**< Owner's uid */
+                        int gid;                                              /**< Owner's gid */
                 } fifo;
 
                 struct {
@@ -912,9 +910,9 @@ typedef struct myinfo {
                         pid_t _ppid;                   /**< Process parent PID from last cycle */
                         pid_t pid;                          /**< Process PID from actual cycle */
                         pid_t ppid;                  /**< Process parent PID from actual cycle */
-                        uid_t uid;                                            /**< Process UID */
-                        uid_t euid;                                 /**< Effective Process UID */
-                        gid_t gid;                                            /**< Process GID */
+                        int uid;                                              /**< Process UID */
+                        int euid;                                   /**< Effective Process UID */
+                        int gid;                                              /**< Process GID */
                         boolean_t zombie;
                         int children;
                         long mem_kbyte;
@@ -1196,7 +1194,6 @@ char *format(const char *, va_list, long *);
 void  redirect_stdfd();
 void  fd_close();
 pid_t getpgid(pid_t);
-void unset_signal_block(sigset_t *);
 void set_signal_block(sigset_t *, sigset_t *);
 boolean_t check_process(Service_T);
 boolean_t check_filesystem(Service_T);

@@ -596,7 +596,7 @@ Example:
  set httpd unixsocket /var/run/monit.sock
      allow username:password
 
-=head4 Options: 
+B<Options>:
 
 B<UNIXSOCKET> set the path to the Unix Socket Monit should bind to 
 and listen on.
@@ -1297,8 +1297,11 @@ statement:
 =head1 SERVICE MONITORING MODE
 
 Monit supports three monitoring modes per service: I<active>,
-I<passive> and I<manual>. See also the example section below for
-usage of the mode statement.
+I<passive> and I<manual>.
+
+Syntax:
+
+  MODE <ACTIVE | PASSIVE | MANUAL>
 
 In I<active> mode (the default), Monit will pro-actively monitor a
 service and in case of problems raise alerts and/or restart
@@ -1327,13 +1330,13 @@ HA-services won't be started after the crashed node will boot again:
   set statefile /tmp/monit.state
 
 
-=head1 SERVICE TIMEOUT
+=head1 SERVICE RESTART LIMIT
 
-B<Monit> provides a service timeout mechanism for situations
+B<Monit> provides a restart limit mechanism for situations
 where a service simply refuses to start or respond over a longer
 period.
 
-The timeout mechanism is based on number of service restarts and
+The restart limit mechanism is based on number of service restarts and
 number of poll-cycles. For example, if a service had I<x>
 restarts within I<y> poll-cycles (where I<x> <= I<y>) then Monit
 will perform an action (for example unmonitor the service). If a
@@ -1344,6 +1347,9 @@ The syntax for the timeout statement is as follows (keywords are
 in capital):
 
  IF <number> RESTART <number> CYCLE(S) THEN <action>
+
+The I<action> value is either one of common L<actions|"ACTION"> or
+TIMEOUT (for backward compatibility, equals to UNMONITOR action).
 
 Here is an example where Monit will unmonitor the service if it was
 restarted 2 times within 3 cycles:
@@ -1911,6 +1917,10 @@ Syntax:
 
  IF SPACE operator value unit THEN action
 
+or:
+
+ IF SPACE FREE operator value unit THEN action
+
 I<operator> is a choice of "<",">","!=","==" in c notation, "gt",
 "lt", "eq", "ne" in shell sh notation and "greater", "less",
 "equal", "notequal" in human readable form (if not specified,
@@ -1937,6 +1947,10 @@ in the context of a filesystem service type.
 Syntax:
 
  IF INODE(S) operator value [unit] THEN action
+
+or:
+
+ IF INODE(S) FREE operator value [unit] THEN action
 
 I<operator> is a choice of "<",">","!=","==" in c notation, "gt",
 "lt", "eq", "ne" in shell sh notation and "greater", "less",
@@ -2279,6 +2293,8 @@ You can check a network link upload and download bandwidth usage, current
 transfer rate and total data transferred in the last 24 hours. This test may
 only be used within a check network service entry in the Monit control file.
 
+Warning: this test requires monit poll time to be at maximum 30 seconds.
+
 Current upload bandwidth rate test syntax:
 
  IF UPLOAD operator value unit THEN action
@@ -2321,10 +2337,11 @@ Examples:
 
 =head2 NETWORK PACKETS TEST
 
-
 You can check the network link upload and download packets count, current
 transfer rate and total data transferred in last 24 hours. This test may
 only be used within a check network service entry in the Monit control file.
+
+Warning: this test requires monit poll time to be at maximum 30 seconds.
 
 Current upload bandwidth rate test syntax:
 
@@ -2367,14 +2384,21 @@ Monit can perform a network ping test by sending ICMP echo request
 datagram packets to a host and wait for the reply. This test can
 only be used within a check host statement. Monit must also run as
 the root user in order to be able to perform the ping test (because
-a ping test must use raw sockets which usually only the super user
+the ping test must use raw sockets which usually only the super user
 is allowed to).
 
 Syntax:
 
-  IF FAILED PING
+  IF FAILED PING[4|6]
      [COUNT number] [WITH] [TIMEOUT number SECONDS]
   THEN action
+
+If a DNS host name was used in the I<check host> statement and the host
+name resolve to several addresses (either IPv4 or IPv6), Monit will
+ping the first available address and continue with the next address
+until one connection succeed or until there are no more addresses left
+to try. You can force Monit to only ping IPv4 or IPv6 addresses by
+using the PING4 or the PING6 keyword instead of PING.
 
 The B<COUNT> parameter specifies how many consecutive ping requests
 will be sent to the host in one cycle. If no reply arrive within
@@ -2398,15 +2422,22 @@ tests.
 Example:
 
  check host mmonit.com with address mmonit.com
-       if failed ping then alert
+       if failed ping then alert  # IPv4 or IPv6
+
+ check host mmonit.com with address 62.109.39.247
+       if failed ping then alert # Address is IPv4 so IPv4 is preferred
+
+or test that the system is explicit accessible via IPv4 and IPv6:
+
+ check host mmonit.com with address mmonit.com
+       if failed ping4 then alert  # IPv4 only
+       if failed ping6 then alert  # IPv6 only
 
 or with all parameters; Send 5 pings to mmonit.com and wait for up
 to 10 seconds for a reply
 
   check host mmonit.com with address mmonit.com
-        if failed
-           ping count 5 with timeout 10 seconds
-        then alert
+        if failed ping count 5 with timeout 10 seconds then alert
 
 
 =head2 CONNECTION TESTING
@@ -2426,6 +2457,7 @@ TCP/UDP port test syntax:
  IF FAILED
     [host]
     <port>
+    [ipversion]
     [type]
     [protocol | {send/expect}+]
     [timeout]
@@ -2461,6 +2493,13 @@ I<port: PORT number>. The port number to connect to
 
 I<unixsocket: UNIXSOCKET path>. Specifies the path to a Unix
 socket (local machine only).
+
+I<ipversion: IPV4 | IPV6 >. Optionally specify the IP version Monit
+should use when trying to connect to the port. If not used, Monit will
+try to connect to the first available address (IPv4 or IPv6). If
+multiple addresses are available and connection to one address failed,
+Monit will try the next address and so on until a connection succeed or
+until there are no more addresses left to try.
 
 I<type: TYPE {TCP|UDP|TCPSSL}>. Optionally specify the socket type
 Monit should use when trying to connect to the port. The
@@ -2503,6 +2542,7 @@ moment Monit knows how to speak:
  I<NTP3>
  I<PGSQL>
  I<POP>
+ I<POPS>
  I<POSTFIX-POLICY>
  I<RADIUS>
  I<RDATE>
@@ -2711,16 +2751,17 @@ Syntax:
  PROTOCOL APACHE-STATUS <limit operator number>+
 
 I<limit> is acronym for child status:
- o logging (loglimit)
- o closing connections (closelimit)
- o performing DNS lookups (dnslimit)
- o in keepalive with a client (keepalivelimit)
- o replying to a client (replylimit)
- o receiving a request (requestlimit)
- o initialising (startlimit)
- o waiting for incoming connections (waitlimit)
- o gracefully closing down (gracefullimit)
- o performing cleanup procedures (cleanuplimit)
+
+ (1) logging (loglimit)
+ (2) closing connections (closelimit)
+ (3) performing DNS lookups (dnslimit)
+ (4) in keepalive with a client (keepalivelimit)
+ (5) replying to a client (replylimit)
+ (6) receiving a request (requestlimit)
+ (7) initialising (startlimit)
+ (8) waiting for incoming connections (waitlimit)
+ (9) gracefully closing down (gracefullimit)
+ (10) performing cleanup procedures (cleanuplimit)
 
 I<operator> is one of "<", "=", ">".
 
@@ -2879,7 +2920,6 @@ name-server is running and also use timeout:
        start program = "/etc/init.d/named start"
        stop program  = "/etc/init.d/named stop"
        if failed port 53 use type udp protocol dns then restart
-       if 3 restarts within 5 cycles then timeout
 
 The following example illustrates how to check if the service
 'sophie' is answering connections on its Unix domain socket:
@@ -3053,7 +3093,6 @@ statement and a file check dependency:
               monit
       }
       if failed host www.tildeslash.com  port 80 then restart
-      if 3 restarts within 5 cycles then timeout
       depend httpd_bin
       group apache
 

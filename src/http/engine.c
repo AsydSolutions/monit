@@ -286,14 +286,14 @@ static Socket_T _socketProducer(int server, Httpd_Flags flags) {
                         LogError("HTTP server: cannot accept connection -- %s\n", stopped ? "service stopped" : STRERROR);
                         return NULL;
                 }
-                if (Net_setNonBlocking(client) < 0 || ! check_socket(client) || ! _authenticateHost(addr)) {
+                if (Net_setNonBlocking(client) < 0 || ! Net_canRead(client, 500) || ! Net_canWrite(client, 500) || ! _authenticateHost(addr)) {
                         Net_abort(client);
                         return NULL;
                 }
 #ifdef HAVE_OPENSSL
-                return socket_create_a(client, addr, mySSLServerConnection);
+                return Socket_createAccepted(client, addr, addrlen, mySSLServerConnection);
 #else
-                return socket_create_a(client, addr, NULL);
+                return Socket_createAccepted(client, addr, addrlen, NULL);
 #endif
         }
         return NULL;
@@ -363,34 +363,35 @@ void Engine_cleanup() {
 boolean_t Engine_addHostAllow(char *pattern) {
         ASSERT(pattern);
         struct addrinfo *res, hints = {
-                .ai_family = AF_INET /* we support just IPv4 currently */
+                .ai_family = AF_INET, /* we support just IPv4 currently */
+                .ai_protocol = IPPROTO_TCP
         };
-        if (getaddrinfo(pattern, NULL, &hints, &res) != 0)
-                return false;
         int added = 0;
-        for (struct addrinfo *_res = res; _res; _res = _res->ai_next) {
-                if (_res->ai_family == AF_INET) {
-                        struct sockaddr_in *sin = (struct sockaddr_in *)_res->ai_addr;
-                        HostsAllow_T h;
-                        NEW(h);
-                        memcpy(&h->network, &sin->sin_addr, 4);
-                        h->mask = 0xffffffff;
-                        LOCK(mutex)
-                        {
-                                if (_hasHostAllow(h))  {
-                                        DEBUG("Skipping redundant host '%s'\n", pattern);
-                                        FREE(h);
-                                } else {
-                                        DEBUG("Adding host allow '%s'\n", pattern);
-                                        h->next = hostlist;
-                                        hostlist = h;
-                                        added++;
+        if (! getaddrinfo(pattern, NULL, &hints, &res)) {
+                for (struct addrinfo *_res = res; _res; _res = _res->ai_next) {
+                        if (_res->ai_family == AF_INET) {
+                                struct sockaddr_in *sin = (struct sockaddr_in *)_res->ai_addr;
+                                HostsAllow_T h;
+                                NEW(h);
+                                memcpy(&h->network, &sin->sin_addr, 4);
+                                h->mask = 0xffffffff;
+                                LOCK(mutex)
+                                {
+                                        if (_hasHostAllow(h))  {
+                                                DEBUG("Skipping redundant host '%s'\n", pattern);
+                                                FREE(h);
+                                        } else {
+                                                DEBUG("Adding host allow '%s'\n", pattern);
+                                                h->next = hostlist;
+                                                hostlist = h;
+                                                added++;
+                                        }
                                 }
+                                END_LOCK;
                         }
-                        END_LOCK;
                 }
+                freeaddrinfo(res);
         }
-        freeaddrinfo(res);
         return added ? true : false;
 }
 

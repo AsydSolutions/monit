@@ -121,13 +121,11 @@
 #define T Ssl_T
 struct T {
         boolean_t accepted;
+        Ssl_Version version;
         int socket;
         SSL *handler;
         SSL_CTX *ctx;
         char *clientpemfile;
-
-        struct T *prev;
-        struct T *next;
 };
 
 
@@ -136,11 +134,9 @@ struct SslServer_T {
         SSL_CTX *ctx;
         char *pemfile;
         char *clientpemfile;
-        T connections; // FIXME: replace with Table + remove next/prev links in Ssl_T
 };
 
 
-static Mutex_T instanceMutex = PTHREAD_MUTEX_INITIALIZER;
 static Mutex_T *instanceMutexTable;
 
 
@@ -185,6 +181,23 @@ static int _verifyCertificates(int preverify_ok, X509_STORE_CTX *ctx) {
 }
 
 
+static boolean_t _setServerNameIdentification(T C, const char *hostname) {
+#ifdef SSL_CTRL_SET_TLSEXT_HOSTNAME
+        struct sockaddr_storage addr;
+        // If the name is set and we use TLS protocol, enable the SNI extension (provided the hostname value is not an IP address)
+        if (hostname && C->version != SSL_V2 && C->version != SSL_V3 && ! inet_pton(AF_INET, hostname, &(((struct sockaddr_in *)&addr)->sin_addr)) &&
+#ifdef HAVE_IPV6
+                ! inet_pton(AF_INET6, hostname, &(((struct sockaddr_in6 *)&addr)->sin6_addr)) &&
+#endif
+                ! SSL_set_tlsext_host_name(C->handler, hostname)) {
+                        LogError("SSL: unable to set the SNI extension to %s\n", hostname);
+                        return false;
+                }
+#endif
+        return true;
+}
+
+
 /* ------------------------------------------------------------------ Public */
 
 
@@ -196,7 +209,7 @@ void Ssl_start() {
         else if (File_exist(RANDOM_DEVICE))
                 RAND_load_file(RANDOM_DEVICE, RANDOM_BYTES);
         else
-                THROW(AssertException, "SSL: cannot find %s nor %s on the system\n", URANDOM_DEVICE, RANDOM_DEVICE);
+                THROW(AssertException, "SSL: cannot find %s nor %s on the system", URANDOM_DEVICE, RANDOM_DEVICE);
         int locks = CRYPTO_num_locks();
         instanceMutexTable = CALLOC(locks, sizeof(Mutex_T));
         for (int i = 0; i < locks; i++)
@@ -226,9 +239,9 @@ void Ssl_threadCleanup() {
 void Ssl_setFipsMode(boolean_t enabled) {
 #ifdef OPENSSL_FIPS
         if (enabled && ! FIPS_mode() && ! FIPS_mode_set(1))
-                THROW(AssertException, "SSL: cannot enter FIPS mode -- %s\n", SSLERROR);
+                THROW(AssertException, "SSL: cannot enter FIPS mode -- %s", SSLERROR);
         else if (! enabled && FIPS_mode() && ! FIPS_mode_set(0))
-                THROW(AssertException, "SSL: cannot exit FIPS mode -- %s\n", SSLERROR);
+                THROW(AssertException, "SSL: cannot exit FIPS mode -- %s", SSLERROR);
 #endif
 }
 
@@ -236,6 +249,7 @@ void Ssl_setFipsMode(boolean_t enabled) {
 T Ssl_new(char *clientpemfile, Ssl_Version version) {
         T C;
         NEW(C);
+        C->version = version;
         if (clientpemfile)
                 C->clientpemfile = Str_dup(clientpemfile);
         const SSL_METHOD *method;
@@ -287,6 +301,9 @@ T Ssl_new(char *clientpemfile, Ssl_Version version) {
         }
         if (version == SSL_Auto)
                 SSL_CTX_set_options(C->ctx, SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3);
+#ifdef SSL_OP_NO_COMPRESSION
+        SSL_CTX_set_options(C->ctx, SSL_OP_NO_COMPRESSION);
+#endif
         if (SSL_CTX_set_cipher_list(C->ctx, CIPHER_LIST) != 1) {
                 LogError("SSL: client cipher list [%s] error -- no valid ciphers\n", CIPHER_LIST);
                 goto sslerror;
@@ -336,12 +353,13 @@ void Ssl_close(T C) {
 }
 
 
-boolean_t Ssl_connect(T C, int socket) {
+boolean_t Ssl_connect(T C, int socket, const char *name) {
         ASSERT(C);
         ASSERT(socket >= 0);
         C->socket = socket;
         SSL_set_connect_state(C->handler);
         SSL_set_fd(C->handler, C->socket);
+        _setServerNameIdentification(C, name);
         int rv = SSL_connect(C->handler);
         if (rv < 0) {
                 switch (SSL_get_error(C->handler, rv)) {
@@ -360,54 +378,82 @@ boolean_t Ssl_connect(T C, int socket) {
 
 int Ssl_write(T C, void *b, int size, int timeout) {
         ASSERT(C);
-        int n;
-        boolean_t retry = false;
-        do {
-                switch (SSL_get_error(C->handler, (n = SSL_write(C->handler, b, size)))) {
-                        case SSL_ERROR_NONE:
-                        case SSL_ERROR_ZERO_RETURN:
-                                return n;
-                        case SSL_ERROR_WANT_READ:
-                                retry = Net_canRead(C->socket, timeout);
-                                break;
-                        case SSL_ERROR_WANT_WRITE:
-                                retry = Net_canWrite(C->socket, timeout);
-                                break;
-                        case SSL_ERROR_SYSCALL:
-                                LogError("SSL: write error -- %s\n", STRERROR);
-                                break;
-                        default:
-                                LogError("SSL: write error -- %s\n", SSLERROR);
-                                return -1;
-                }
-        } while (retry);
+        int n = 0;
+        if (size > 0) {
+                boolean_t retry = false;
+                do {
+                        switch (SSL_get_error(C->handler, (n = SSL_write(C->handler, b, size)))) {
+                                case SSL_ERROR_NONE:
+                                case SSL_ERROR_ZERO_RETURN:
+                                        return n;
+                                case SSL_ERROR_WANT_READ:
+                                        n = 0;
+                                        errno = EWOULDBLOCK;
+                                        retry = Net_canRead(C->socket, timeout);
+                                        break;
+                                case SSL_ERROR_WANT_WRITE:
+                                        n = 0;
+                                        errno = EWOULDBLOCK;
+                                        retry = Net_canWrite(C->socket, timeout);
+                                        break;
+                                case SSL_ERROR_SYSCALL:
+                                        {
+                                                unsigned long error = ERR_get_error();
+                                                if (error)
+                                                        LogError("SSL: write error -- %s\n", ERR_error_string(error, NULL));
+                                                else if (n == 0)
+                                                        LogError("SSL: write error -- EOF\n");
+                                                else if (n == -1)
+                                                        LogError("SSL: write I/O error -- %s\n", STRERROR);
+                                        }
+                                        return -1;
+                                default:
+                                        LogError("SSL: write error -- %s\n", SSLERROR);
+                                        return -1;
+                        }
+                } while (retry);
+        }
         return n;
 }
 
 
 int Ssl_read(T C, void *b, int size, int timeout) {
         ASSERT(C);
-        int n;
-        boolean_t retry = false;
-        do {
-                switch (SSL_get_error(C->handler, (n = SSL_read(C->handler, b, size)))) {
-                        case SSL_ERROR_NONE:
-                        case SSL_ERROR_ZERO_RETURN:
-                                return n;
-                        case SSL_ERROR_WANT_READ:
-                                retry = Net_canRead(C->socket, timeout);
-                                break;
-                        case SSL_ERROR_WANT_WRITE:
-                                retry = Net_canWrite(C->socket, timeout);
-                                break;
-                        case SSL_ERROR_SYSCALL:
-                                LogError("SSL: read error -- %s\n", STRERROR);
-                                break;
-                        default:
-                                LogError("SSL: read error -- %s\n", SSLERROR);
-                                return -1;
-                }
-        } while (retry);
+        int n = 0;
+        if (size > 0) {
+                boolean_t retry = false;
+                do {
+                        switch (SSL_get_error(C->handler, (n = SSL_read(C->handler, b, size)))) {
+                                case SSL_ERROR_NONE:
+                                case SSL_ERROR_ZERO_RETURN:
+                                        return n;
+                                case SSL_ERROR_WANT_READ:
+                                        n = 0;
+                                        errno = EWOULDBLOCK;
+                                        retry = Net_canRead(C->socket, timeout);
+                                        break;
+                                case SSL_ERROR_WANT_WRITE:
+                                        n = 0;
+                                        errno = EWOULDBLOCK;
+                                        retry = Net_canWrite(C->socket, timeout);
+                                        break;
+                                case SSL_ERROR_SYSCALL:
+                                        {
+                                                unsigned long error = ERR_get_error();
+                                                if (error)
+                                                        LogError("SSL: read error -- %s\n", ERR_error_string(error, NULL));
+                                                else if (n == 0)
+                                                        LogError("SSL: read error -- EOF\n");
+                                                else if (n == -1)
+                                                        LogError("SSL: read I/O error -- %s\n", STRERROR);
+                                        }
+                                        return -1;
+                                default:
+                                        LogError("SSL: read error -- %s\n", SSLERROR);
+                                        return -1;
+                        }
+                } while (retry);
+        }
         return n;
 }
 
@@ -467,6 +513,9 @@ SslServer_T SslServer_new(char *pemfile, char *clientpemfile, int socket) {
                 goto sslerror;
         }
         SSL_CTX_set_options(S->ctx, SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3);
+#ifdef SSL_OP_NO_COMPRESSION
+        SSL_CTX_set_options(S->ctx, SSL_OP_NO_COMPRESSION);
+#endif
         SSL_CTX_set_session_cache_mode(S->ctx, SSL_SESS_CACHE_OFF);
         if (SSL_CTX_use_certificate_chain_file(S->ctx, pemfile) != 1) {
                 LogError("SSL: server certificate chain loading failed -- %s\n", SSLERROR);
@@ -519,11 +568,6 @@ sslerror:
 
 void SslServer_free(SslServer_T *S) {
         ASSERT(S && *S);
-        while ((*S)->connections) {
-                T C = (*S)->connections;
-                (*S)->connections = (*S)->connections->next;
-                SslServer_freeConnection(*S, &C);
-        }
         if ((*S)->ctx)
                 SSL_CTX_free((*S)->ctx);
         FREE((*S)->pemfile);
@@ -546,15 +590,6 @@ T SslServer_newConnection(SslServer_T S) {
         SSL_set_mode(C->handler, SSL_MODE_ENABLE_PARTIAL_WRITE | SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
         if (S->clientpemfile)
                 C->clientpemfile = Str_dup(S->clientpemfile);
-        LOCK(instanceMutex)
-        {
-                if (S->connections) {
-                        C->next = S->connections;
-                        C->next->prev = C;
-                }
-                S->connections = C;
-        }
-        END_LOCK;
         return C;
 }
 
@@ -563,14 +598,6 @@ void SslServer_freeConnection(SslServer_T S, T *C) {
         ASSERT(S);
         ASSERT(C && *C);
         Ssl_close(*C);
-        LOCK(instanceMutex);
-        {
-                if ((*C)->prev)
-                        (*C)->prev->next = (*C)->next;
-                else
-                        S->connections = (*C)->next;
-        }
-        END_LOCK;
         Ssl_free(C);
 }
 
